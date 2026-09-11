@@ -4,11 +4,10 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_POST
 
 import requests
-import json
 import re
 import os
 
-from urllib.parse import quote
+from google import genai
 
 from .models import Conversation, ChatMessage
 
@@ -17,10 +16,7 @@ from .models import Conversation, ChatMessage
 # CONFIG
 # =========================================================
 
-GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/"
-    "v1beta/models/gemini-3.7-flash:streamGenerateContent"
-)
+GEMINI_MODEL = "gemini-3.8-flash"
 
 MAX_HISTORY_MESSAGES = 4
 
@@ -140,7 +136,10 @@ def clean_ai_response(text):
     for prefix in prefixes:
 
         if text.startswith(prefix):
-            text = text[len(prefix):].strip()
+
+            text = text[
+                len(prefix):
+            ].strip()
 
     text = re.sub(
         r"\n?(User|Assistant|AI|Bot):\s*$",
@@ -272,7 +271,7 @@ def duckduckgo_search(query, limit=5):
 
         url = (
             "https://html.duckduckgo.com/html/?q="
-            + quote(query)
+            + requests.utils.quote(query)
         )
 
         response = requests.get(
@@ -420,6 +419,7 @@ def get_travel_topic_answer(message):
         "when should",
         "when to go",
         "time to visit",
+
     ]
 
     if any(
@@ -459,6 +459,7 @@ def get_travel_topic_answer(message):
         "location",
         "located",
         "situated",
+
     ]
 
     if any(
@@ -549,6 +550,7 @@ def needs_web_search(message):
         return False
 
     greetings = [
+
         "hi",
         "hello",
         "hey",
@@ -560,6 +562,7 @@ def needs_web_search(message):
         "thank you",
         "ok",
         "okay",
+
     ]
 
     if text in greetings:
@@ -588,6 +591,7 @@ def needs_web_search(message):
         "job opening",
         "available",
         "availability",
+
     ]
 
     if any(
@@ -609,6 +613,7 @@ def needs_web_search(message):
         "kaun hai",
         "kahan hai",
         "kab hai",
+
     ]
 
     if any(
@@ -630,6 +635,7 @@ def needs_web_search(message):
         "best season",
         "jana chahiye",
         "kab jana",
+
     ]
 
     if any(
@@ -675,6 +681,7 @@ def build_web_context(message):
     )
 
     seen = set()
+
     count = 0
 
     for result in results:
@@ -741,6 +748,132 @@ def update_conversation_title(
 
 
 # =========================================================
+# GEMINI CLIENT
+# =========================================================
+
+def get_gemini_client():
+
+    api_key = os.environ.get(
+        "GEMINI_API_KEY"
+    )
+
+    if not api_key:
+        return None
+
+    return genai.Client(
+        api_key=api_key
+    )
+
+
+# =========================================================
+# GEMINI STREAM GENERATOR
+# =========================================================
+
+def gemini_stream(
+    prompt,
+    conversation,
+    message
+):
+
+    client = get_gemini_client()
+
+    if client is None:
+
+        yield (
+            "❌ Gemini API key configured nahi hai. "
+            "Render Environment Variables mein "
+            "GEMINI_API_KEY check karo."
+        )
+
+        return
+
+    full_response = ""
+
+    try:
+
+        response_stream = (
+            client.models.generate_content_stream(
+                model=GEMINI_MODEL,
+                contents=prompt,
+            )
+        )
+
+        for chunk in response_stream:
+
+            chunk_text = getattr(
+                chunk,
+                "text",
+                None
+            )
+
+            if chunk_text:
+
+                full_response += chunk_text
+
+                yield chunk_text
+
+        full_response = clean_ai_response(
+            full_response
+        )
+
+        if full_response:
+
+            ChatMessage.objects.create(
+                conversation=conversation,
+                user_message=message,
+                bot_response=full_response
+            )
+
+            update_conversation_title(
+                conversation,
+                message
+            )
+
+    except Exception as error:
+
+        print(
+            "GEMINI API ERROR:",
+            repr(error)
+        )
+
+        error_text = str(error).lower()
+
+        if "503" in error_text:
+
+            yield (
+                "\n\n⚠️ Gemini service abhi temporarily busy hai. "
+                "Please dobara try karo."
+            )
+
+        elif "429" in error_text:
+
+            yield (
+                "\n\n⏳ Gemini API rate limit reached hai. "
+                "Thodi der baad dobara try karo."
+            )
+
+        elif "401" in error_text or "api key" in error_text:
+
+            yield (
+                "\n\n❌ Gemini API key invalid ya unavailable hai. "
+                "Render Environment Variables check karo."
+            )
+
+        elif "403" in error_text:
+
+            yield (
+                "\n\n❌ Gemini API access denied hai. "
+                "API key permissions check karo."
+            )
+
+        else:
+
+            yield (
+                "\n\n❌ Gemini AI service se response nahi aa paya."
+            )
+
+
+# =========================================================
 # SEND MESSAGE
 # =========================================================
 
@@ -793,6 +926,7 @@ def send_message(request):
     # =====================================================
 
     greetings = {
+
         "hi",
         "hello",
         "hey",
@@ -800,6 +934,7 @@ def send_message(request):
         "hiii",
         "hy",
         "namaste",
+
     }
 
     if message.lower() in greetings:
@@ -838,6 +973,7 @@ def send_message(request):
     # =====================================================
 
     unclear = {
+
         "kya",
         "kyu",
         "kyun",
@@ -850,6 +986,7 @@ def send_message(request):
         "ok",
         "okay",
         "?",
+
     }
 
     if message.lower() in unclear:
@@ -1090,204 +1227,12 @@ NOW ANSWER ONLY THE CURRENT USER QUESTION
 {message}
 """
 
-    # =====================================================
-    # GEMINI STREAM
-    # =====================================================
-
-    def generate_response():
-
-        full_response = ""
-
-        try:
-
-            api_key = os.environ.get(
-                "GEMINI_API_KEY"
-            )
-
-            if not api_key:
-
-                yield (
-                    "❌ Gemini API key configured nahi hai. "
-                    "Render Environment Variables mein "
-                    "GEMINI_API_KEY add karo."
-                )
-
-                return
-
-            payload = {
-                "contents": [
-                    {
-                        "role": "user",
-                        "parts": [
-                            {
-                                "text": prompt
-                            }
-                        ]
-                    }
-                ],
-                "generationConfig": {
-                    "temperature": 0.1,
-                    "maxOutputTokens": 500,
-                }
-            }
-
-            response = requests.post(
-                GEMINI_API_URL,
-                headers={
-                    "Content-Type":
-                        "application/json",
-                    "x-goog-api-key":
-                        api_key,
-                },
-                params={
-                    "alt": "sse"
-                },
-                json=payload,
-                stream=True,
-                timeout=180
-            )
-
-            if response.status_code == 401:
-                yield (
-                    "❌ Gemini API key invalid hai. "
-                    "Render Environment Variables mein "
-                    "GEMINI_API_KEY check karo."
-                )
-                return
-
-            if response.status_code == 403:
-                yield (
-                    "❌ Gemini API access denied hai. "
-                    "API key aur Gemini API permissions check karo."
-                )
-                return
-
-            if response.status_code == 429:
-                yield (
-                    "⏳ Gemini API rate limit reached hai. "
-                    "Thodi der baad dobara try karo."
-                )
-                return
-
-            response.raise_for_status()
-
-            for line in response.iter_lines(
-                decode_unicode=True
-            ):
-
-                if not line:
-                    continue
-
-                if line.startswith("data:"):
-
-                    line = line[5:].strip()
-
-                if not line:
-                    continue
-
-                try:
-
-                    data = json.loads(line)
-
-                except json.JSONDecodeError:
-
-                    continue
-
-                candidates = data.get(
-                    "candidates",
-                    []
-                )
-
-                if not candidates:
-                    continue
-
-                candidate = candidates[0]
-
-                content = candidate.get(
-                    "content",
-                    {}
-                )
-
-                parts = content.get(
-                    "parts",
-                    []
-                )
-
-                for part in parts:
-
-                    chunk = part.get(
-                        "text",
-                        ""
-                    )
-
-                    if chunk:
-
-                        full_response += chunk
-
-                        yield chunk
-
-            # =================================================
-            # CLEAN
-            # =================================================
-
-            full_response = clean_ai_response(
-                full_response
-            )
-
-            # =================================================
-            # SAVE
-            # =================================================
-
-            if full_response:
-
-                ChatMessage.objects.create(
-                    conversation=conversation,
-                    user_message=message,
-                    bot_response=full_response
-                )
-
-                update_conversation_title(
-                    conversation,
-                    message
-                )
-
-        except requests.exceptions.Timeout:
-
-            yield (
-                "⏳ AI response bahut slow ho raha hai. "
-                "Please thodi der baad try karo."
-            )
-
-        except requests.exceptions.ConnectionError:
-
-            yield (
-                "❌ Gemini AI service se connection nahi ho paya."
-            )
-
-        except requests.exceptions.RequestException as error:
-
-            print(
-                "GEMINI API ERROR:",
-                error
-            )
-
-            yield (
-                "❌ Gemini AI service se connection nahi ho paya."
-            )
-
-        except Exception as error:
-
-            print(
-                "UNEXPECTED GEMINI ERROR:",
-                error
-            )
-
-            yield (
-                "❌ Kuch technical problem aa gayi."
-            )
-
     return StreamingHttpResponse(
-        generate_response(),
+        gemini_stream(
+            prompt,
+            conversation,
+            message
+        ),
         content_type="text/plain; charset=utf-8"
     )
 
