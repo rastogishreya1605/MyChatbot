@@ -6,6 +6,8 @@ from django.views.decorators.http import require_POST
 import requests
 import json
 import re
+import os
+
 from urllib.parse import quote
 
 from .models import Conversation, ChatMessage
@@ -15,8 +17,10 @@ from .models import Conversation, ChatMessage
 # CONFIG
 # =========================================================
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "llama3.2:latest"
+GEMINI_API_URL = (
+    "https://generativelanguage.googleapis.com/"
+    "v1beta/models/gemini-3.7-flash:streamGenerateContent"
+)
 
 MAX_HISTORY_MESSAGES = 4
 
@@ -184,10 +188,6 @@ def strip_html(text):
 # =========================================================
 # WIKIPEDIA SEARCH
 # =========================================================
-#
-# Reliable factual fallback.
-# This avoids depending only on a search-engine HTML layout.
-# =========================================================
 
 def wikipedia_search(query, limit=4):
 
@@ -210,8 +210,7 @@ def wikipedia_search(query, limit=4):
             api_url,
             params=params,
             headers={
-                "User-Agent":
-                    "MyChatbot/1.0"
+                "User-Agent": "MyChatbot/1.0"
             },
             timeout=8
         )
@@ -294,14 +293,12 @@ def duckduckgo_search(query, limit=5):
 
         results = []
 
-        # Extract result titles
         title_matches = re.findall(
             r'class="result__a"[^>]*>(.*?)</a>',
             html,
             flags=re.DOTALL | re.IGNORECASE
         )
 
-        # Extract snippets
         snippet_matches = re.findall(
             r'class="result__snippet"[^>]*>(.*?)'
             r'(?:</a>|</div>)',
@@ -351,14 +348,11 @@ def duckduckgo_search(query, limit=5):
 # =========================================================
 # SPECIAL TRAVEL KNOWLEDGE
 # =========================================================
-#
-# Important stable information is kept here so a local LLM
-# cannot replace "best time" with an unrelated location answer.
-# =========================================================
 
 TRAVEL_KNOWLEDGE = {
 
     "rishikesh": {
+
         "best_time": (
             "Rishikesh ghoomne ke liye generally "
             "September se November aur February se April "
@@ -390,7 +384,7 @@ TRAVEL_KNOWLEDGE = {
         "location": (
             "Rishikesh Uttarakhand ke Dehradun district mein "
             "Ganga river ke kinare sthit hai."
-        ),
+        )
     }
 }
 
@@ -403,15 +397,15 @@ def get_travel_topic_answer(message):
 
     text = message.lower().strip()
 
-    # Rishikesh topic
     if "rishikesh" not in text:
         return None
 
     # -----------------------------------------------------
-    # BEST TIME / KAB JANA
+    # BEST TIME
     # -----------------------------------------------------
 
     best_time_words = [
+
         "kab jana",
         "kab ja",
         "jana chahiye",
@@ -434,15 +428,21 @@ def get_travel_topic_answer(message):
     ):
 
         return (
-            "Rishikesh ghoomne ke liye **September se November** "
+            "Rishikesh ghoomne ke liye "
+            "**September se November** "
             "aur **February se April** generally best months hain. 🌿\n\n"
+
             "• **October–November:** Weather pleasant hota hai, "
             "sightseeing aur outdoor activities ke liye bahut achha.\n"
+
             "• **February–April:** Mausam comfortable rehta hai "
             "aur outdoor activities ke liye suitable hota hai.\n"
+
             "• **May–June:** Garmi zyada ho sakti hai.\n"
+
             "• **July–August:** Monsoon ki wajah se rain aur river "
             "conditions outdoor activities ko affect kar sakti hain.\n\n"
+
             "**Agar tum specifically rafting + sightseeing ke liye "
             "ja rahi ho, to October–November ek strong choice hai.**"
         )
@@ -452,6 +452,7 @@ def get_travel_topic_answer(message):
     # -----------------------------------------------------
 
     location_words = [
+
         "kahan hai",
         "kaha hai",
         "where is",
@@ -565,6 +566,7 @@ def needs_web_search(message):
         return False
 
     current_words = [
+
         "latest",
         "today",
         "current",
@@ -595,6 +597,7 @@ def needs_web_search(message):
         return True
 
     information_words = [
+
         "what is",
         "who is",
         "where is",
@@ -615,6 +618,7 @@ def needs_web_search(message):
         return True
 
     travel_words = [
+
         "travel",
         "trip",
         "tour",
@@ -645,7 +649,6 @@ def build_web_context(message):
 
     results = []
 
-    # First: Wikipedia
     wiki_results = wikipedia_search(
         message,
         limit=4
@@ -655,7 +658,6 @@ def build_web_context(message):
         wiki_results
     )
 
-    # Second: DuckDuckGo
     ddg_results = duckduckgo_search(
         message,
         limit=4
@@ -672,9 +674,7 @@ def build_web_context(message):
         "SEARCH INFORMATION FOUND FOR THE CURRENT QUESTION:\n\n"
     )
 
-    # Remove duplicate titles
     seen = set()
-
     count = 0
 
     for result in results:
@@ -759,7 +759,6 @@ def send_message(request):
         .strip()
     )
 
-
     # =====================================================
     # VALIDATION
     # =====================================================
@@ -774,7 +773,6 @@ def send_message(request):
             }
         )
 
-
     if not conversation_id:
 
         return JsonResponse(
@@ -785,12 +783,10 @@ def send_message(request):
             }
         )
 
-
     conversation = get_object_or_404(
         Conversation,
         id=conversation_id
     )
-
 
     # =====================================================
     # GREETINGS
@@ -817,7 +813,6 @@ def send_message(request):
             "pooch sakti hain."
         )
 
-
         def greeting_stream():
 
             yield answer
@@ -833,12 +828,10 @@ def send_message(request):
                 message
             )
 
-
         return StreamingHttpResponse(
             greeting_stream(),
             content_type="text/plain; charset=utf-8"
         )
-
 
     # =====================================================
     # UNCLEAR SHORT QUESTIONS
@@ -867,7 +860,6 @@ def send_message(request):
             "main accurately help karunga."
         )
 
-
         def unclear_stream():
 
             yield answer
@@ -878,19 +870,13 @@ def send_message(request):
                 bot_response=answer
             )
 
-
         return StreamingHttpResponse(
             unclear_stream(),
             content_type="text/plain; charset=utf-8"
         )
 
-
     # =====================================================
-    # IMPORTANT: SPECIFIC TRAVEL ANSWERS
-    # =====================================================
-    #
-    # These are answered BEFORE Ollama so the model cannot
-    # change "when should I go?" into "where is Rishikesh?"
+    # SPECIFIC TRAVEL ANSWERS
     # =====================================================
 
     travel_answer = get_travel_topic_answer(
@@ -914,12 +900,10 @@ def send_message(request):
                 message
             )
 
-
         return StreamingHttpResponse(
             travel_stream(),
             content_type="text/plain; charset=utf-8"
         )
-
 
     # =====================================================
     # CONVERSATION MEMORY
@@ -934,7 +918,6 @@ def send_message(request):
 
     recent_chats.reverse()
 
-
     conversation_text = ""
 
     for chat in recent_chats:
@@ -943,7 +926,6 @@ def send_message(request):
             f"User: {chat.user_message}\n"
             f"Assistant: {chat.bot_response}\n\n"
         )
-
 
     # =====================================================
     # WEB SEARCH
@@ -956,7 +938,6 @@ def send_message(request):
         web_context = build_web_context(
             message
         )
-
 
     # =====================================================
     # FINAL AI PROMPT
@@ -1103,15 +1084,14 @@ Do not write "User:".
 Do not repeat the question unnecessarily.
 
 ==================================================
-
-Now answer ONLY the CURRENT USER QUESTION:
+NOW ANSWER ONLY THE CURRENT USER QUESTION
+==================================================
 
 {message}
 """
 
-
     # =====================================================
-    # OLLAMA STREAM
+    # GEMINI STREAM
     # =====================================================
 
     def generate_response():
@@ -1120,34 +1100,76 @@ Now answer ONLY the CURRENT USER QUESTION:
 
         try:
 
-            response = requests.post(
+            api_key = os.environ.get(
+                "GEMINI_API_KEY"
+            )
 
-                OLLAMA_URL,
+            if not api_key:
 
-                json={
-                    "model": MODEL,
+                yield (
+                    "❌ Gemini API key configured nahi hai. "
+                    "Render Environment Variables mein "
+                    "GEMINI_API_KEY add karo."
+                )
 
-                    "prompt": prompt,
+                return
 
-                    "stream": True,
-
-                    "keep_alive": "10m",
-
-                    "options": {
-                        "num_predict": 500,
-                        "temperature": 0.1,
-                        "num_ctx": 4096,
+            payload = {
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "text": prompt
+                            }
+                        ]
                     }
+                ],
+                "generationConfig": {
+                    "temperature": 0.1,
+                    "maxOutputTokens": 500,
+                }
+            }
+
+            response = requests.post(
+                GEMINI_API_URL,
+                headers={
+                    "Content-Type":
+                        "application/json",
+                    "x-goog-api-key":
+                        api_key,
                 },
-
+                params={
+                    "alt": "sse"
+                },
+                json=payload,
                 stream=True,
-
                 timeout=180
             )
 
+            if response.status_code == 401:
+                yield (
+                    "❌ Gemini API key invalid hai. "
+                    "Render Environment Variables mein "
+                    "GEMINI_API_KEY check karo."
+                )
+                return
+
+            if response.status_code == 403:
+                yield (
+                    "❌ Gemini API access denied hai. "
+                    "API key aur Gemini API permissions check karo."
+                )
+                return
+
+            if response.status_code == 429:
+                yield (
+                    "⏳ Gemini API rate limit reached hai. "
+                    "Thodi der baad dobara try karo."
+                )
+                return
 
             response.raise_for_status()
-
 
             for line in response.iter_lines(
                 decode_unicode=True
@@ -1156,35 +1178,53 @@ Now answer ONLY the CURRENT USER QUESTION:
                 if not line:
                     continue
 
+                if line.startswith("data:"):
+
+                    line = line[5:].strip()
+
+                if not line:
+                    continue
 
                 try:
 
-                    data = json.loads(
-                        line
-                    )
+                    data = json.loads(line)
 
                 except json.JSONDecodeError:
 
                     continue
 
-
-                chunk = data.get(
-                    "response",
-                    ""
+                candidates = data.get(
+                    "candidates",
+                    []
                 )
 
+                if not candidates:
+                    continue
 
-                if chunk:
+                candidate = candidates[0]
 
-                    full_response += chunk
+                content = candidate.get(
+                    "content",
+                    {}
+                )
 
-                    yield chunk
+                parts = content.get(
+                    "parts",
+                    []
+                )
 
+                for part in parts:
 
-                if data.get("done"):
+                    chunk = part.get(
+                        "text",
+                        ""
+                    )
 
-                    break
+                    if chunk:
 
+                        full_response += chunk
+
+                        yield chunk
 
             # =================================================
             # CLEAN
@@ -1193,7 +1233,6 @@ Now answer ONLY the CURRENT USER QUESTION:
             full_response = clean_ai_response(
                 full_response
             )
-
 
             # =================================================
             # SAVE
@@ -1212,15 +1251,6 @@ Now answer ONLY the CURRENT USER QUESTION:
                     message
                 )
 
-
-        except requests.exceptions.ConnectionError:
-
-            yield (
-                "❌ Ollama connect nahi ho raha. "
-                "Please check karo ki Ollama running hai."
-            )
-
-
         except requests.exceptions.Timeout:
 
             yield (
@@ -1228,30 +1258,33 @@ Now answer ONLY the CURRENT USER QUESTION:
                 "Please thodi der baad try karo."
             )
 
+        except requests.exceptions.ConnectionError:
+
+            yield (
+                "❌ Gemini AI service se connection nahi ho paya."
+            )
 
         except requests.exceptions.RequestException as error:
 
             print(
-                "OLLAMA ERROR:",
+                "GEMINI API ERROR:",
                 error
             )
 
             yield (
-                "❌ AI service se connection nahi ho paya."
+                "❌ Gemini AI service se connection nahi ho paya."
             )
-
 
         except Exception as error:
 
             print(
-                "UNEXPECTED ERROR:",
+                "UNEXPECTED GEMINI ERROR:",
                 error
             )
 
             yield (
                 "❌ Kuch technical problem aa gayi."
             )
-
 
     return StreamingHttpResponse(
         generate_response(),
@@ -1276,7 +1309,6 @@ def delete_chat(
 
     conversation.delete()
 
-
     if not Conversation.objects.exists():
 
         new_conversation = (
@@ -1293,13 +1325,11 @@ def delete_chat(
             }
         )
 
-
     next_conversation = (
         Conversation.objects
         .order_by("-updated_at")
         .first()
     )
-
 
     return JsonResponse(
         {
@@ -1319,13 +1349,11 @@ def clear_chat(request):
 
     Conversation.objects.all().delete()
 
-
     new_conversation = (
         Conversation.objects.create(
             title="New Chat"
         )
     )
-
 
     return JsonResponse(
         {
