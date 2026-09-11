@@ -6,6 +6,7 @@ from django.views.decorators.http import require_POST
 import requests
 import re
 import os
+import time
 
 from google import genai
 
@@ -16,7 +17,15 @@ from .models import Conversation, ChatMessage
 # CONFIG
 # =========================================================
 
-GEMINI_MODEL = "gemini-3.8-flash"
+# Gemini models in priority order.
+# If one model is temporarily busy/unavailable,
+# the next model will automatically be tried.
+GEMINI_MODELS = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+]
 
 MAX_HISTORY_MESSAGES = 4
 
@@ -137,12 +146,11 @@ def clean_ai_response(text):
 
         if text.startswith(prefix):
 
-            text = text[
-                len(prefix):
-            ].strip()
+            text = text[len(prefix):].strip()
 
+    # Fixed regex
     text = re.sub(
-        r"\n?(User|Assistant|AI|Bot):\s*$",
+        r"\*\*\n\*\*?(User|Assistant|AI|Bot):\s*$",
         "",
         text,
         flags=re.IGNORECASE
@@ -598,6 +606,7 @@ def needs_web_search(message):
         word in text
         for word in current_words
     ):
+
         return True
 
     information_words = [
@@ -620,6 +629,7 @@ def needs_web_search(message):
         word in text
         for word in information_words
     ):
+
         return True
 
     travel_words = [
@@ -642,6 +652,7 @@ def needs_web_search(message):
         word in text
         for word in travel_words
     ):
+
         return True
 
     return False
@@ -766,6 +777,33 @@ def get_gemini_client():
 
 
 # =========================================================
+# CHECK TEMPORARY GEMINI ERROR
+# =========================================================
+
+def is_temporary_gemini_error(error):
+
+    error_text = str(error).lower()
+
+    temporary_words = [
+
+        "503",
+        "service unavailable",
+        "temporarily unavailable",
+        "temporarily busy",
+        "overloaded",
+        "unavailable",
+        "deadline exceeded",
+        "timeout",
+
+    ]
+
+    return any(
+        word in error_text
+        for word in temporary_words
+    )
+
+
+# =========================================================
 # GEMINI STREAM GENERATOR
 # =========================================================
 
@@ -789,88 +827,194 @@ def gemini_stream(
 
     full_response = ""
 
-    try:
+    successful_model = None
 
-        response_stream = (
-            client.models.generate_content_stream(
-                model=GEMINI_MODEL,
-                contents=prompt,
+    # =====================================================
+    # TRY GEMINI MODELS ONE BY ONE
+    # =====================================================
+
+    for model_index, model in enumerate(
+        GEMINI_MODELS
+    ):
+
+        try:
+
+            print(
+                f"GEMINI: Trying model {model}"
             )
+
+            response_stream = (
+                client.models.generate_content_stream(
+                    model=model,
+                    contents=prompt,
+                )
+            )
+
+            model_response = ""
+
+            for chunk in response_stream:
+
+                chunk_text = getattr(
+                    chunk,
+                    "text",
+                    None
+                )
+
+                if chunk_text:
+
+                    model_response += chunk_text
+
+                    yield chunk_text
+
+            if model_response.strip():
+
+                full_response = model_response
+                successful_model = model
+
+                print(
+                    f"GEMINI SUCCESS: {model}"
+                )
+
+                break
+
+            # If no response was returned,
+            # try the next model.
+            print(
+                f"GEMINI EMPTY RESPONSE: {model}"
+            )
+
+        except Exception as error:
+
+            print(
+                f"GEMINI MODEL ERROR [{model}]:",
+                repr(error)
+            )
+
+            # -------------------------------------------------
+            # TEMPORARY ERROR
+            # -------------------------------------------------
+
+            if is_temporary_gemini_error(error):
+
+                if model_index < len(
+                    GEMINI_MODELS
+                ) - 1:
+
+                    print(
+                        f"GEMINI FALLBACK: "
+                        f"{model} unavailable. "
+                        f"Trying next model..."
+                    )
+
+                    # Small delay before fallback
+                    time.sleep(1)
+
+                    continue
+
+                else:
+
+                    yield (
+                        "\n\n⚠️ Gemini ke saare available "
+                        "AI models abhi temporarily busy hain. "
+                        "Please 10–20 seconds baad dobara try karo."
+                    )
+
+                    return
+
+            # -------------------------------------------------
+            # RATE LIMIT
+            # -------------------------------------------------
+
+            error_text = str(error).lower()
+
+            if "429" in error_text:
+
+                if model_index < len(
+                    GEMINI_MODELS
+                ) - 1:
+
+                    print(
+                        f"GEMINI RATE LIMIT: "
+                        f"{model}. Trying fallback..."
+                    )
+
+                    time.sleep(1)
+
+                    continue
+
+                yield (
+                    "\n\n⏳ Gemini API rate limit reached hai. "
+                    "Thodi der baad dobara try karo."
+                )
+
+                return
+
+            # -------------------------------------------------
+            # API KEY
+            # -------------------------------------------------
+
+            if (
+                "401" in error_text
+                or "api key" in error_text
+            ):
+
+                yield (
+                    "\n\n❌ Gemini API key invalid "
+                    "ya unavailable hai. "
+                    "Render Environment Variables check karo."
+                )
+
+                return
+
+            # -------------------------------------------------
+            # ACCESS DENIED
+            # -------------------------------------------------
+
+            if "403" in error_text:
+
+                yield (
+                    "\n\n❌ Gemini API access denied hai. "
+                    "API key permissions check karo."
+                )
+
+                return
+
+            # -------------------------------------------------
+            # OTHER ERROR
+            # -------------------------------------------------
+
+            yield (
+                "\n\n❌ Gemini AI service se "
+                "response nahi aa paya."
+            )
+
+            return
+
+    # =====================================================
+    # SAVE SUCCESSFUL RESPONSE
+    # =====================================================
+
+    full_response = clean_ai_response(
+        full_response
+    )
+
+    if full_response:
+
+        ChatMessage.objects.create(
+            conversation=conversation,
+            user_message=message,
+            bot_response=full_response
         )
 
-        for chunk in response_stream:
-
-            chunk_text = getattr(
-                chunk,
-                "text",
-                None
-            )
-
-            if chunk_text:
-
-                full_response += chunk_text
-
-                yield chunk_text
-
-        full_response = clean_ai_response(
-            full_response
+        update_conversation_title(
+            conversation,
+            message
         )
-
-        if full_response:
-
-            ChatMessage.objects.create(
-                conversation=conversation,
-                user_message=message,
-                bot_response=full_response
-            )
-
-            update_conversation_title(
-                conversation,
-                message
-            )
-
-    except Exception as error:
 
         print(
-            "GEMINI API ERROR:",
-            repr(error)
+            f"GEMINI FINAL MODEL USED: "
+            f"{successful_model}"
         )
-
-        error_text = str(error).lower()
-
-        if "503" in error_text:
-
-            yield (
-                "\n\n⚠️ Gemini service abhi temporarily busy hai. "
-                "Please dobara try karo."
-            )
-
-        elif "429" in error_text:
-
-            yield (
-                "\n\n⏳ Gemini API rate limit reached hai. "
-                "Thodi der baad dobara try karo."
-            )
-
-        elif "401" in error_text or "api key" in error_text:
-
-            yield (
-                "\n\n❌ Gemini API key invalid ya unavailable hai. "
-                "Render Environment Variables check karo."
-            )
-
-        elif "403" in error_text:
-
-            yield (
-                "\n\n❌ Gemini API access denied hai. "
-                "API key permissions check karo."
-            )
-
-        else:
-
-            yield (
-                "\n\n❌ Gemini AI service se response nahi aa paya."
-            )
 
 
 # =========================================================
