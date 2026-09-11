@@ -2,297 +2,511 @@
 
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    <title>My Chatbot</title>
+  <title>My Chatbot</title>
 
-    <link rel="stylesheet" href="{% static 'chat/style.css' %}?v=30" />
+  <link
+    rel="stylesheet"
+    href="{% static 'chat/style.css' %}?v=31"
+  >
 
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
-      rel="stylesheet"
-    />
-  </head>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap"
+    rel="stylesheet"
+  >
+</head>
 
-  <body data-conversation-id="{{ current_conversation.id }}">
-    <div class="app">
-      <aside class="sidebar" id="sidebar">
-        <div class="sidebar-top">
-          <div class="brand">
-            <div class="brand-logo">
+<body data-conversation-id="{{ current_conversation.id }}">
+
+  <div class="app">
+
+    <!-- =====================================================
+         SIDEBAR
+    ====================================================== -->
+
+    <aside class="sidebar" id="sidebar">
+
+      <div class="sidebar-top">
+
+        <div class="brand">
+
+          <div class="brand-logo">
+            <span>✦</span>
+          </div>
+
+          <div>
+            <div class="brand-name">CHATBOT</div>
+          </div>
+
+        </div>
+
+
+        <!-- NEW CHAT -->
+
+        <button
+          class="new-chat-btn"
+          type="button"
+          onclick="newChat()"
+        >
+          <span class="new-chat-icon">＋</span>
+          <span>New chat</span>
+        </button>
+
+
+        <!-- SEARCH -->
+
+        <div class="chat-search">
+
+          <span>⌕</span>
+
+          <input
+            type="text"
+            id="chatSearch"
+            placeholder="Search chats..."
+            autocomplete="off"
+          >
+
+        </div>
+
+
+        <!-- CHAT TITLE -->
+
+        <div class="chat-section-title">
+          <span>Your chats</span>
+        </div>
+
+
+        <!-- CONVERSATION LIST -->
+
+        <div
+          class="conversation-list"
+          id="conversationList"
+        >
+
+          {% for conversation in conversations %}
+
+          <div
+            class="conversation-item {% if conversation.id == current_conversation.id %}active{% endif %}"
+            data-conversation-id="{{ conversation.id }}"
+            data-title="{{ conversation.title|lower }}"
+          >
+
+            <div
+              class="conversation-main"
+              onclick="openConversation({{ conversation.id }})"
+            >
+
+              <span class="conversation-icon">
+                ◌
+              </span>
+
+              <span class="conversation-title">
+                {{ conversation.title }}
+              </span>
+
+            </div>
+
+
+            <button
+              class="conversation-delete"
+              type="button"
+              title="Delete chat"
+              onclick="deleteConversation(event, {{ conversation.id }})"
+            >
+              ⋯
+            </button>
+
+          </div>
+
+          {% empty %}
+
+          <div class="empty-chats">
+            No conversations yet
+          </div>
+
+          {% endfor %}
+
+        </div>
+
+      </div>
+
+
+      <!-- SIDEBAR BOTTOM -->
+
+      <div class="sidebar-bottom">
+
+        <button
+          class="sidebar-action"
+          type="button"
+          onclick="deleteAllChats()"
+        >
+          <span>⌫</span>
+          <span>Clear all chats</span>
+        </button>
+
+      </div>
+
+    </aside>
+
+
+    <!-- =====================================================
+         MAIN
+    ====================================================== -->
+
+    <main class="main">
+
+
+      <!-- ===================================================
+           TOPBAR
+      ==================================================== -->
+
+      <header class="topbar">
+
+        <div class="topbar-left">
+
+          <button
+            class="mobile-menu"
+            type="button"
+            onclick="toggleSidebar()"
+          >
+            ☰
+          </button>
+
+
+          <div class="mobile-title">
+
+            <h1>
+              <strong>CHATBOT</strong>
+            </h1>
+
+          </div>
+
+        </div>
+
+
+        <div class="topbar-right">
+
+          <button
+            class="theme-btn"
+            id="themeButton"
+            type="button"
+            onclick="toggleTheme()"
+            title="Toggle theme"
+          >
+            ☾
+          </button>
+
+        </div>
+
+      </header>
+
+
+      <!-- ===================================================
+           CHAT AREA
+      ==================================================== -->
+
+      <section
+        class="chat-area"
+        id="chatArea"
+      >
+
+        <div
+          class="chat-container"
+          id="messages"
+        >
+
+
+          <!-- =================================================
+               WELCOME SCREEN
+          ================================================== -->
+
+          {% if not chat_history %}
+
+          <div
+            class="welcome-message"
+            id="welcomeMessage"
+          >
+
+            <div class="welcome-icon">
               <span>✦</span>
             </div>
 
-            <div>
-              <div class="brand-name">CHATBOT</div>
-            </div>
-          </div>
 
-          <button class="new-chat-btn" type="button" onclick="newChat()">
-            <span class="new-chat-icon">＋</span>
-            <span>New chat</span>
-          </button>
+            <h1>
+              How can I help you today?
+            </h1>
 
-          <!-- Search -->
 
-          <div class="chat-search">
-            <span>⌕</span>
+            <p>
+              Ask me anything. I can help with coding,
+              learning, career, writing, ideas and more.
+            </p>
 
-            <input
-              type="text"
-              id="chatSearch"
-              placeholder="Search chats..."
-              autocomplete="off"
-            />
-          </div>
 
-          <div class="chat-section-title">
-            <span>Your chats</span>
-          </div>
+            <!-- SUGGESTIONS -->
 
-          <div class="conversation-list" id="conversationList">
-            {% for conversation in conversations %}
+            <div class="suggestion-grid">
 
-            <div
-              class="conversation-item {% if conversation.id == current_conversation.id %}active{% endif %}"
-              data-conversation-id="{{ conversation.id }}"
-              data-title="{{ conversation.title|lower }}"
-            >
-              <div
-                class="conversation-main"
-                onclick="openConversation({{ conversation.id }})"
-              >
-                <span class="conversation-icon">◌</span>
 
-                <span class="conversation-title">
-                  {{ conversation.title }}
-                </span>
-              </div>
+              <!-- PYTHON -->
 
               <button
-                class="conversation-delete"
+                class="suggestion-card"
                 type="button"
-                title="Delete chat"
-                onclick="deleteConversation(event, {{ conversation.id }})"
+                onclick="useSuggestion('Explain Python in simple words')"
               >
-                ⋯
+
+                <div class="suggestion-icon">
+                  ⌘
+                </div>
+
+                <div>
+
+                  <strong>
+                    Learn something
+                  </strong>
+
+                  <span>
+                    Explain Python in simple words
+                  </span>
+
+                </div>
+
               </button>
+
+
+              <!-- INTERVIEW -->
+
+              <button
+                class="suggestion-card"
+                type="button"
+                onclick="useSuggestion('Give me some interview preparation tips')"
+              >
+
+                <div class="suggestion-icon">
+                  ◇
+                </div>
+
+                <div>
+
+                  <strong>
+                    Prepare for interview
+                  </strong>
+
+                  <span>
+                    Give me interview preparation tips
+                  </span>
+
+                </div>
+
+              </button>
+
+
+              <!-- RESUME -->
+
+              <button
+                class="suggestion-card"
+                type="button"
+                onclick="useSuggestion('Help me improve my resume')"
+              >
+
+                <div class="suggestion-icon">
+                  ✎
+                </div>
+
+                <div>
+
+                  <strong>
+                    Improve my resume
+                  </strong>
+
+                  <span>
+                    Help me improve my resume
+                  </span>
+
+                </div>
+
+              </button>
+
+
+              <!-- PROJECT -->
+
+              <button
+                class="suggestion-card"
+                type="button"
+                onclick="useSuggestion('Give me a project idea for my portfolio')"
+              >
+
+                <div class="suggestion-icon">
+                  ✧
+                </div>
+
+                <div>
+
+                  <strong>
+                    Get an idea
+                  </strong>
+
+                  <span>
+                    Give me a portfolio project idea
+                  </span>
+
+                </div>
+
+              </button>
+
             </div>
 
-            {% empty %}
-
-            <div class="empty-chats">No conversations yet</div>
-
-            {% endfor %}
           </div>
+
+          {% endif %}
+
+
+          <!-- =================================================
+               CHAT HISTORY
+          ================================================== -->
+
+          {% for chat in chat_history %}
+
+
+          <!-- USER MESSAGE -->
+
+          <div class="message-row user-row">
+
+            <div class="message-avatar user-avatar">
+              You
+            </div>
+
+            <div class="message-content">
+
+              <div class="message-name">
+                You
+              </div>
+
+              <div class="message-text">
+                {{ chat.user_message|linebreaksbr }}
+              </div>
+
+            </div>
+
+          </div>
+
+
+          <!-- BOT MESSAGE -->
+
+          <div class="message-row bot-row">
+
+            <div class="message-avatar bot-avatar">
+              ✦
+            </div>
+
+            <div class="message-content">
+
+
+              <div class="message-header">
+
+                <div class="message-name">
+                  My Chatbot
+                </div>
+
+
+                <button
+                  class="copy-btn"
+                  type="button"
+                  onclick="copyMessage(this)"
+                  title="Copy"
+                >
+                  ⧉
+                </button>
+
+              </div>
+
+
+              <div class="message-text bot-text">
+                {{ chat.bot_response|linebreaksbr }}
+              </div>
+
+            </div>
+
+          </div>
+
+
+          {% endfor %}
+
         </div>
 
-        <div class="sidebar-bottom">
-          <button class="sidebar-action" type="button" onclick="deleteAllChats">
-            <span>⌫</span>
-            <span>Clear all chats</span>
+      </section>
+
+
+      <!-- ===================================================
+           MESSAGE COMPOSER
+      ==================================================== -->
+
+      <div class="composer-wrapper">
+
+        <form
+          id="chatForm"
+          class="composer"
+          onsubmit="sendMessage(event)"
+        >
+
+          {% csrf_token %}
+
+
+          <textarea
+            id="message"
+            rows="1"
+            placeholder="Message My Chatbot..."
+            autocomplete="off"
+          ></textarea>
+
+
+          <button
+            id="sendButton"
+            class="send-btn"
+            type="submit"
+            title="Send message"
+          >
+
+            <span>
+              ↑
+            </span>
+
           </button>
-        </div>
-      </aside>
 
-      <main class="main">
-        <!-- Header -->
+        </form>
 
-        <header class="topbar">
-          <div class="topbar-left">
-            <button class="mobile-menu" type="button" onclick="toggleSidebar()">
-              ☰
-            </button>
+      </div>
 
-            <div class="mobile-title">
-              <h1>
-                <strong>CHATBOT</strong>
-              </h1>
-            </div>
-          </div>
+    </main>
 
-          <div class="topbar-right">
-            <button
-              class="theme-btn"
-              id="themeButton"
-              type="button"
-              onclick="toggleTheme()"
-              title="Toggle theme"
-            >
-              ☾
-            </button>
-          </div>
-        </header>
+  </div>
 
-        <!-- ================= CHAT AREA ================= -->
 
-        <section class="chat-area" id="chatArea">
-          <div class="chat-container" id="messages">
-            {% if not chat_history %}
+  <!-- =====================================================
+       MOBILE SIDEBAR OVERLAY
+  ====================================================== -->
 
-            <div class="welcome-message" id="welcomeMessage">
-              <div class="welcome-icon">
-                <span>✦</span>
-              </div>
+  <div
+    class="sidebar-overlay"
+    id="sidebarOverlay"
+    onclick="toggleSidebar()"
+  ></div>
 
-              <h1>How can I help you today?</h1>
 
-              <p>
-                Ask me anything. I can help with coding, learning, career,
-                writing, ideas and more.
-              </p>
+  <!-- =====================================================
+       JAVASCRIPT
+  ====================================================== -->
 
-              <div class="suggestion-grid">
-                <button
-                  class="suggestion-card"
-                  type="button"
-                  onclick="useSuggestion('Explain Python in simple words')"
-                >
-                  <div class="suggestion-icon">⌘</div>
+  <script
+    src="{% static 'chat/script.js' %}?v=31"
+  ></script>
 
-                  <div>
-                    <strong> Learn something </strong>
-
-                    <span> Explain Python in simple words </span>
-                  </div>
-                </button>
-
-                <button
-                  class="suggestion-card"
-                  type="button"
-                  onclick="
-                    useSuggestion('Give me some interview preparation tips')
-                  "
-                >
-                  <div class="suggestion-icon">◇</div>
-
-                  <div>
-                    <strong> Prepare for interview </strong>
-
-                    <span> Give me interview preparation tips </span>
-                  </div>
-                </button>
-
-                <button
-                  class="suggestion-card"
-                  type="button"
-                  onclick="useSuggestion('Help me improve my resume')"
-                >
-                  <div class="suggestion-icon">✎</div>
-
-                  <div>
-                    <strong> Improve my resume </strong>
-
-                    <span> Help me improve my resume </span>
-                  </div>
-                </button>
-
-                <button
-                  class="suggestion-card"
-                  type="button"
-                  onclick="
-                    useSuggestion('Give me a project idea for my portfolio')
-                  "
-                >
-                  <div class="suggestion-icon">✧</div>
-
-                  <div>
-                    <strong> Get an idea </strong>
-
-                    <span> Give me a portfolio project idea </span>
-                  </div>
-                </button>
-              </div>
-            </div>
-
-            {% endif %}
-
-            <!-- Existing messages -->
-
-            {% for chat in chat_history %}
-
-            <!-- User message -->
-
-            <div class="message-row user-row">
-              <div class="message-avatar user-avatar">You</div>
-
-              <div class="message-content">
-                <div class="message-name">You</div>
-
-                <div class="message-text">
-                  {{ chat.user_message|linebreaksbr }}
-                </div>
-              </div>
-            </div>
-
-            <!-- Bot message -->
-
-            <div class="message-row bot-row">
-              <div class="message-avatar bot-avatar">✦</div>
-
-              <div class="message-content">
-                <div class="message-header">
-                  <div class="message-name">My Chatbot</div>
-
-                  <button
-                    class="copy-btn"
-                    type="button"
-                    onclick="copyMessage(this)"
-                    title="Copy"
-                  >
-                    ⧉
-                  </button>
-                </div>
-
-                <div class="message-text bot-text">
-                  {{ chat.bot_response|linebreaksbr }}
-                </div>
-              </div>
-            </div>
-
-            {% endfor %}
-          </div>
-        </section>
-
-        <!-- ================= INPUT ================= -->
-
-        <div class="composer-wrapper">
-          <form id="chatForm" class="composer" onsubmit="sendMessage(event)">
-            {% csrf_token %}
-
-            <textarea
-              id="message"
-              rows="1"
-              placeholder="Message My Chatbot..."
-              autocomplete="off"
-            ></textarea>
-
-            <button
-              id="sendButton"
-              class="send-btn"
-              type="submit"
-              title="Send message"
-            >
-              <span>↑</span>
-            </button>
-          </form>
-        </div>
-      </main>
-    </div>
-
-    <!-- Mobile overlay -->
-
-    <div
-      class="sidebar-overlay"
-      id="sidebarOverlay"
-      onclick="toggleSidebar()"
-    ></div>
-
-    <script src="{% static 'chat/script.js' %}?v=30"></script>
-  </body>
+</body>
 </html>

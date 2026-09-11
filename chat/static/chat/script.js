@@ -1,1068 +1,1189 @@
+// =========================================================
+// MY CHATBOT - FINAL SCRIPT
+// =========================================================
 
 let currentConversationId =
-    document.body.dataset.conversationId;
+  document.body.dataset.conversationId || null;
 
 let isSending = false;
 
 
-/* =========================================================
-   CSRF
-   ========================================================= */
+// =========================================================
+// DOM ELEMENTS
+// =========================================================
+
+const chatForm = document.getElementById("chatForm");
+const messageInput = document.getElementById("message");
+const sendButton = document.getElementById("sendButton");
+const messagesContainer = document.getElementById("messages");
+const chatArea = document.getElementById("chatArea");
+const conversationList = document.getElementById("conversationList");
+const chatSearch = document.getElementById("chatSearch");
+const sidebar = document.getElementById("sidebar");
+const sidebarOverlay = document.getElementById("sidebarOverlay");
+const themeButton = document.getElementById("themeButton");
+
+
+// =========================================================
+// CSRF TOKEN
+// =========================================================
 
 function getCSRFToken() {
+  const cookieValue = document.cookie
+    .split("; ")
+    .find((row) => row.startsWith("csrftoken="));
 
-    const cookie = document.cookie
-        .split("; ")
-        .find(row => row.startsWith("csrftoken="));
+  if (!cookieValue) {
+    return "";
+  }
 
-    return cookie
-        ? decodeURIComponent(cookie.split("=")[1])
-        : "";
+  return decodeURIComponent(cookieValue.split("=")[1]);
 }
 
-const messageInput =
-    document.getElementById("message");
 
-const chatArea =
-    document.getElementById("chatArea");
+// =========================================================
+// TEXTAREA AUTO RESIZE
+// =========================================================
 
-const messages =
-    document.getElementById("messages");
+function autoResizeTextarea() {
+  if (!messageInput) return;
 
-const sendButton =
-    document.getElementById("sendButton");
+  messageInput.style.height = "auto";
 
-const chatForm =
-    document.getElementById("chatForm");
+  const maxHeight = 180;
 
-
+  messageInput.style.height =
+    Math.min(messageInput.scrollHeight, maxHeight) + "px";
+}
 
 if (messageInput) {
-
-    messageInput.addEventListener("input", () => {
-
-        messageInput.style.height = "auto";
-
-        messageInput.style.height =
-            Math.min(messageInput.scrollHeight, 140) + "px";
-
-    });
-
+  messageInput.addEventListener("input", autoResizeTextarea);
 }
+
+
+// =========================================================
+// ENTER KEY
+// =========================================================
+
 if (messageInput) {
+  messageInput.addEventListener("keydown", function (event) {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
 
-    messageInput.addEventListener("keydown", (event) => {
-
-        if (event.key === "Enter" && !event.shiftKey) {
-
-            event.preventDefault();
-
-            if (!isSending) {
-                sendMessage(event);
-            }
-
-        }
-
-    });
-
+      if (!isSending) {
+        sendMessage(event);
+      }
+    }
+  });
 }
 
 
+// =========================================================
+// SEND MESSAGE
+// =========================================================
 
 async function sendMessage(event) {
+  if (event) {
+    event.preventDefault();
+  }
 
-    if (event) {
-        event.preventDefault();
-    }
+  if (isSending) {
+    return;
+  }
 
-    if (isSending) {
-        return;
-    }
+  if (!messageInput) {
+    return;
+  }
 
-    const message =
-        messageInput.value.trim();
+  const message = messageInput.value.trim();
 
-    if (!message) {
-        return;
-    }
+  if (!message) {
+    return;
+  }
 
+  isSending = true;
 
-    isSending = true;
-
+  if (sendButton) {
     sendButton.disabled = true;
+    sendButton.classList.add("loading");
+  }
+
+  // Remove welcome screen
+  const welcomeMessage = document.getElementById("welcomeMessage");
+
+  if (welcomeMessage) {
+    welcomeMessage.remove();
+  }
+
+  // Add user's message
+  addUserMessage(message);
+
+  // Clear input
+  messageInput.value = "";
+  autoResizeTextarea();
+
+  // Show typing
+  const typingElement = showTypingIndicator();
+
+  try {
+    const formData = new FormData();
+
+    formData.append("message", message);
+
+    if (currentConversationId) {
+      formData.append(
+        "conversation_id",
+        currentConversationId
+      );
+    }
+
+    const csrfToken = getCSRFToken();
+
+    console.log("Sending message...");
+    console.log("Conversation ID:", currentConversationId);
+
+    const response = await fetch("/send-message/", {
+      method: "POST",
+
+      headers: {
+        "X-CSRFToken": csrfToken,
+        "X-Requested-With": "XMLHttpRequest"
+      },
+
+      body: formData,
+
+      credentials: "same-origin"
+    });
 
 
-    /* Remove welcome */
-    const welcome =
-        document.getElementById("welcomeMessage");
+    // =====================================================
+    // HTTP ERROR
+    // =====================================================
 
-    if (welcome) {
-        welcome.remove();
+    if (!response.ok) {
+      const errorText = await response.text();
+
+      console.error(
+        "SERVER ERROR:",
+        response.status,
+        errorText
+      );
+
+      throw new Error(
+        "Server returned HTTP " + response.status
+      );
     }
 
 
-    /* Add user message */
-    addUserMessage(message);
+    // =====================================================
+    // GET COMPLETE RESPONSE
+    // =====================================================
+
+    const responseText = await response.text();
+
+    console.log("CHATBOT RESPONSE:");
+    console.log(responseText);
 
 
-    /* Clear input */
+    // =====================================================
+    // REMOVE TYPING
+    // =====================================================
 
-    messageInput.value = "";
+    if (typingElement) {
+      typingElement.remove();
+    }
 
-    messageInput.style.height = "auto";
+
+    // =====================================================
+    // EMPTY RESPONSE
+    // =====================================================
+
+    if (!responseText || !responseText.trim()) {
+      throw new Error("Empty response received from server.");
+    }
 
 
-    /* Typing indicator */
+    // =====================================================
+    // CREATE BOT MESSAGE
+    // =====================================================
 
-    const typingId =
-        showTyping();
+    const botMessage = createBotMessage();
+
+    const botText =
+      botMessage.querySelector(".bot-text");
+
+    if (botText) {
+      botText.textContent =
+        cleanAssistantPrefix(responseText);
+    }
+
+
+    // =====================================================
+    // UPDATE CONVERSATION ID
+    // =====================================================
+
+    const returnedConversationId =
+      response.headers.get("X-Conversation-ID");
+
+    if (returnedConversationId) {
+      currentConversationId = returnedConversationId;
+
+      document.body.dataset.conversationId =
+        returnedConversationId;
+    }
+
+
+    // =====================================================
+    // REFRESH CHAT LIST
+    // =====================================================
+
+    setTimeout(() => {
+      refreshConversationList();
+    }, 300);
 
 
     scrollToBottom();
 
+  } catch (error) {
 
-    try {
+    console.error("CHAT ERROR:", error);
 
-        const formData =
-            new FormData();
-
-        formData.append(
-            "message",
-            message
-        );
-
-        formData.append(
-            "conversation_id",
-            currentConversationId
-        );
-
-
-        const response =
-            await fetch(
-                "/send-message/",
-                {
-                    method: "POST",
-
-                    headers: {
-                        "X-CSRFToken":
-                            getCSRFToken()
-                    },
-
-                    body: formData
-                }
-            );
-
-
-        if (!response.ok) {
-
-            throw new Error(
-                "Server error: " +
-                response.status
-            );
-
-        }
-
-
-        removeTyping(typingId);
-
-
-        /* Bot message */
-
-        const botElements =
-            createBotMessage();
-
-        const botText =
-            botElements.text;
-
-        let fullResponse = "";
-
-
-        if (response.body) {
-
-            const reader =
-                response.body.getReader();
-
-            const decoder =
-                new TextDecoder("utf-8");
-
-
-            while (true) {
-
-                const {
-                    value,
-                    done
-                } = await reader.read();
-
-
-                if (done) {
-                    break;
-                }
-
-
-                const chunk =
-                    decoder.decode(
-                        value,
-                        {
-                            stream: true
-                        }
-                    );
-
-
-                fullResponse += chunk;
-
-
-                botText.textContent =
-                    cleanAssistantPrefix(
-                        fullResponse
-                    );
-
-
-                scrollToBottom();
-            }
-
-        } else {
-
-            fullResponse =
-                await response.text();
-
-            botText.textContent =
-                cleanAssistantPrefix(
-                    fullResponse
-                );
-
-        }
-
-
-        botText.dataset.raw =
-            cleanAssistantPrefix(
-                fullResponse
-            );
-
-
-        updateCopyButton(
-            botElements.copy,
-            botText.dataset.raw
-        );
-
-
-        scrollToBottom();
-
+    if (typingElement) {
+      typingElement.remove();
     }
 
-    catch (error) {
-
-        removeTyping(typingId);
-
-        console.error(
-            "CHAT ERROR:",
-            error
-        );
-
-
-        const errorElements =
-            createBotMessage();
-
-
-        errorElements.text.textContent =
-            "❌ Sorry, response generate nahi ho paya. Please try again.";
-
-
-        errorElements.text.dataset.raw =
-            errorElements.text.textContent;
-
-    }
-
-    finally {
-
-        isSending = false;
-
-        sendButton.disabled = false;
-
-        messageInput.focus();
-
-    }
-
-}
-
-
-/* =========================================================
-   CLEAN RESPONSE
-   ========================================================= */
-
-function cleanAssistantPrefix(text) {
-
-    text = text || "";
-
-    if (
-        text
-            .toLowerCase()
-            .startsWith("assistant:")
-    ) {
-
-        return text
-            .substring(10)
-            .trim();
-
-    }
-
-    return text;
-
-}
-
-
-/* =========================================================
-   USER MESSAGE
-   ========================================================= */
-
-function addUserMessage(text) {
-
-    const row =
-        document.createElement("div");
-
-    row.className =
-        "message-row user-row";
-
-
-    const avatar =
-        document.createElement("div");
-
-    avatar.className =
-        "message-avatar user-avatar";
-
-    avatar.textContent =
-        "You";
-
-
-    const content =
-        document.createElement("div");
-
-    content.className =
-        "message-content";
-
-
-    const name =
-        document.createElement("div");
-
-    name.className =
-        "message-name";
-
-    name.textContent =
-        "You";
-
-
-    const message =
-        document.createElement("div");
-
-    message.className =
-        "message-text";
-
-    message.textContent =
-        text;
-
-
-    content.appendChild(name);
-
-    content.appendChild(message);
-
-    row.appendChild(avatar);
-
-    row.appendChild(content);
-
-    messages.appendChild(row);
-
-}
-
-
-/* =========================================================
-   BOT MESSAGE
-   ========================================================= */
-
-function createBotMessage() {
-
-    const row =
-        document.createElement("div");
-
-    row.className =
-        "message-row bot-row";
-
-
-    const avatar =
-        document.createElement("div");
-
-    avatar.className =
-        "message-avatar bot-avatar";
-
-    avatar.textContent =
-        "✦";
-
-
-    const content =
-        document.createElement("div");
-
-    content.className =
-        "message-content";
-
-
-    const header =
-        document.createElement("div");
-
-    header.className =
-        "message-header";
-
-
-    const name =
-        document.createElement("div");
-
-    name.className =
-        "message-name";
-
-    name.textContent =
-        "My Chatbot";
-
-
-    const copy =
-        document.createElement("button");
-
-    copy.className =
-        "copy-btn";
-
-    copy.type =
-        "button";
-
-    copy.title =
-        "Copy";
-
-    copy.textContent =
-        "⧉";
-
-
-    const text =
-        document.createElement("div");
-
-    text.className =
-        "message-text bot-text";
-
-    text.dataset.raw =
-        "";
-
-
-    copy.onclick = function () {
-
-        copyMessage(this);
-
-    };
-
-
-    header.appendChild(name);
-
-    header.appendChild(copy);
-
-    content.appendChild(header);
-
-    content.appendChild(text);
-
-    row.appendChild(avatar);
-
-    row.appendChild(content);
-
-    messages.appendChild(row);
-
-
-    return {
-        row,
-        text,
-        copy
-    };
-
-}
-
-
-/* =========================================================
-   TYPING INDICATOR
-   ========================================================= */
-
-function showTyping() {
-
-    const id =
-        "typing-" +
-        Date.now();
-
-
-    const row =
-        document.createElement("div");
-
-    row.className =
-        "typing-row";
-
-    row.id =
-        id;
-
-
-    const avatar =
-        document.createElement("div");
-
-    avatar.className =
-        "message-avatar bot-avatar";
-
-    avatar.textContent =
-        "✦";
-
-
-    const dots =
-        document.createElement("div");
-
-    dots.className =
-        "typing-dots";
-
-
-    for (let i = 0; i < 3; i++) {
-
-        const dot =
-            document.createElement("span");
-
-        dots.appendChild(dot);
-
-    }
-
-
-    row.appendChild(avatar);
-
-    row.appendChild(dots);
-
-    messages.appendChild(row);
-
-
-    return id;
-
-}
-
-
-function removeTyping(id) {
-
-    const element =
-        document.getElementById(id);
-
-    if (element) {
-        element.remove();
-    }
-
-}
-
-
-/* =========================================================
-   COPY
-   ========================================================= */
-
-async function copyMessage(button) {
-
-    const message =
-        button
-            .closest(".message-content")
-            .querySelector(".bot-text");
-
-
-    const text =
-        message.dataset.raw ||
-        message.innerText;
-
-
-    try {
-
-        await navigator.clipboard.writeText(text);
-
-        const old =
-            button.textContent;
-
-        button.textContent =
-            "✓";
-
-
-        setTimeout(() => {
-
-            button.textContent =
-                old;
-
-        }, 1200);
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "Copy failed:",
-            error
-        );
-
-    }
-
-}
-
-
-function updateCopyButton(
-    button,
-    text
-) {
-
-    button.dataset.copy =
-        text;
-
-}
-
-
-/* =========================================================
-   SUGGESTIONS
-   ========================================================= */
-
-function useSuggestion(text) {
-
-    if (!messageInput) {
-        return;
-    }
-
-    messageInput.value =
-        text;
-
-    messageInput.dispatchEvent(
-        new Event("input")
+    showError(
+      "Sorry, response generate nahi ho paya. Please try again."
     );
+
+  } finally {
+
+    isSending = false;
+
+    if (sendButton) {
+      sendButton.disabled = false;
+      sendButton.classList.remove("loading");
+    }
 
     messageInput.focus();
-
-    sendMessage();
-
+  }
 }
 
 
-/* =========================================================
-   NEW CHAT
-   ========================================================= */
+// =========================================================
+// CLEAN ASSISTANT PREFIX
+// =========================================================
 
-async function newChat() {
+function cleanAssistantPrefix(text) {
+  if (!text) {
+    return "";
+  }
 
-    if (isSending) {
-        return;
-    }
+  let cleaned = text.trim();
 
+  cleaned = cleaned.replace(
+    /^(assistant|ai|bot|my chatbot)\s*:\s*/i,
+    ""
+  );
 
-    try {
-
-        const response =
-            await fetch(
-                "/new-chat/",
-                {
-                    method: "POST",
-
-                    headers: {
-                        "X-CSRFToken":
-                            getCSRFToken()
-                    }
-                }
-            );
-
-
-        const data =
-            await response.json();
-
-
-        if (data.success) {
-
-            window.location.href =
-                "/conversation/" +
-                data.conversation_id +
-                "/";
-
-        }
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "NEW CHAT ERROR:",
-            error
-        );
-
-    }
-
+  return cleaned.trim();
 }
 
 
-/* =========================================================
-   OPEN CONVERSATION
-   ========================================================= */
+// =========================================================
+// ADD USER MESSAGE
+// =========================================================
 
-function openConversation(id) {
+function addUserMessage(message) {
+  if (!messagesContainer) {
+    return;
+  }
 
-    if (isSending) {
-        return;
-    }
+  const row = document.createElement("div");
 
-    window.location.href =
-        "/conversation/" +
-        id +
-        "/";
+  row.className =
+    "message-row user-row";
 
+  const avatar =
+    document.createElement("div");
+
+  avatar.className =
+    "message-avatar user-avatar";
+
+  avatar.textContent = "You";
+
+  const content =
+    document.createElement("div");
+
+  content.className =
+    "message-content";
+
+  const name =
+    document.createElement("div");
+
+  name.className =
+    "message-name";
+
+  name.textContent = "You";
+
+  const text =
+    document.createElement("div");
+
+  text.className =
+    "message-text";
+
+  text.textContent = message;
+
+  content.appendChild(name);
+  content.appendChild(text);
+
+  row.appendChild(avatar);
+  row.appendChild(content);
+
+  messagesContainer.appendChild(row);
+
+  scrollToBottom();
 }
 
 
-/* =========================================================
-   DELETE CHAT
-   ========================================================= */
+// =========================================================
+// CREATE BOT MESSAGE
+// =========================================================
 
-async function deleteConversation(
-    event,
-    id
-) {
+function createBotMessage() {
+  const row =
+    document.createElement("div");
 
-    event.stopPropagation();
+  row.className =
+    "message-row bot-row";
 
+  const avatar =
+    document.createElement("div");
 
-    if (isSending) {
-        return;
-    }
+  avatar.className =
+    "message-avatar bot-avatar";
 
+  avatar.textContent = "✦";
 
-    const confirmed =
-        confirm(
-            "Delete this conversation?"
-        );
+  const content =
+    document.createElement("div");
 
+  content.className =
+    "message-content";
 
-    if (!confirmed) {
-        return;
-    }
+  const header =
+    document.createElement("div");
 
+  header.className =
+    "message-header";
 
-    try {
+  const name =
+    document.createElement("div");
 
-        const response =
-            await fetch(
-                "/delete-chat/" +
-                id +
-                "/",
-                {
-                    method: "POST",
+  name.className =
+    "message-name";
 
-                    headers: {
-                        "X-CSRFToken":
-                            getCSRFToken()
-                    }
-                }
-            );
+  name.textContent =
+    "My Chatbot";
 
+  const copyButton =
+    document.createElement("button");
 
-        const data =
-            await response.json();
+  copyButton.className =
+    "copy-btn";
 
+  copyButton.type =
+    "button";
 
-        if (data.success) {
+  copyButton.title =
+    "Copy";
 
-            window.location.href =
-                "/conversation/" +
-                data.conversation_id +
-                "/";
+  copyButton.textContent =
+    "⧉";
 
-        }
+  copyButton.onclick =
+    function () {
+      copyMessage(copyButton);
+    };
 
-    }
+  const text =
+    document.createElement("div");
 
-    catch (error) {
+  text.className =
+    "message-text bot-text";
 
-        console.error(
-            "DELETE ERROR:",
-            error
-        );
+  header.appendChild(name);
+  header.appendChild(copyButton);
 
-    }
+  content.appendChild(header);
+  content.appendChild(text);
 
+  row.appendChild(avatar);
+  row.appendChild(content);
+
+  messagesContainer.appendChild(row);
+
+  scrollToBottom();
+
+  return row;
 }
 
 
-/* =========================================================
-   DELETE ALL
-   ========================================================= */
+// =========================================================
+// TYPING INDICATOR
+// =========================================================
 
-async function deleteAllChats() {
+function showTypingIndicator() {
+  if (!messagesContainer) {
+    return null;
+  }
 
-    if (isSending) {
-        return;
-    }
+  const row =
+    document.createElement("div");
 
+  row.className =
+    "message-row bot-row typing-row";
 
-    const confirmed =
-        confirm(
-            "Are you sure you want to delete all chats?"
-        );
+  row.innerHTML = `
+    <div class="message-avatar bot-avatar">✦</div>
 
+    <div class="message-content">
+      <div class="message-header">
+        <div class="message-name">My Chatbot</div>
+      </div>
 
-    if (!confirmed) {
-        return;
-    }
+      <div class="message-text bot-text">
+        <span class="typing-dots">
+          <span></span>
+          <span></span>
+          <span></span>
+        </span>
+      </div>
+    </div>
+  `;
 
+  messagesContainer.appendChild(row);
 
-    try {
+  scrollToBottom();
 
-        const response =
-            await fetch(
-                "/clear-chat/",
-                {
-                    method: "POST",
-
-                    headers: {
-                        "X-CSRFToken":
-                            getCSRFToken()
-                    }
-                }
-            );
-
-
-        const data =
-            await response.json();
-
-
-        if (data.success) {
-
-            window.location.href =
-                "/conversation/" +
-                data.conversation_id +
-                "/";
-
-        }
-
-    }
-
-    catch (error) {
-
-        console.error(
-            "CLEAR ERROR:",
-            error
-        );
-
-    }
-
+  return row;
 }
 
 
-/* =========================================================
-   CHAT SEARCH
-   ========================================================= */
+// =========================================================
+// SHOW ERROR
+// =========================================================
 
-const chatSearch =
-    document.getElementById(
-        "chatSearch"
-    );
+function showError(message) {
+  if (!messagesContainer) {
+    return;
+  }
 
+  const row =
+    document.createElement("div");
 
-if (chatSearch) {
+  row.className =
+    "message-row bot-row error-row";
 
-    chatSearch.addEventListener(
-        "input",
-        function () {
+  const avatar =
+    document.createElement("div");
 
-            const query =
-                this.value
-                    .toLowerCase()
-                    .trim();
+  avatar.className =
+    "message-avatar bot-avatar";
 
+  avatar.textContent =
+    "✦";
 
-            document
-                .querySelectorAll(
-                    ".conversation-item"
-                )
-                .forEach(item => {
+  const content =
+    document.createElement("div");
 
-                    const title =
-                        item.dataset.title ||
-                        "";
+  content.className =
+    "message-content";
 
+  const name =
+    document.createElement("div");
 
-                    if (
-                        title.includes(query)
-                    ) {
+  name.className =
+    "message-name";
 
-                        item.style.display =
-                            "flex";
+  name.textContent =
+    "My Chatbot";
 
-                    }
+  const text =
+    document.createElement("div");
 
-                    else {
+  text.className =
+    "message-text bot-text";
 
-                        item.style.display =
-                            "none";
+  text.textContent =
+    "❌ " + message;
 
-                    }
+  content.appendChild(name);
+  content.appendChild(text);
 
-                });
+  row.appendChild(avatar);
+  row.appendChild(content);
 
-        }
-    );
+  messagesContainer.appendChild(row);
 
+  scrollToBottom();
 }
 
 
-/* =========================================================
-   THEME
-   ========================================================= */
+// =========================================================
+// COPY MESSAGE
+// =========================================================
 
-function toggleTheme() {
+async function copyMessage(button) {
+  if (!button) {
+    return;
+  }
 
-    document.body.classList.toggle(
-        "dark"
-    );
+  const content =
+    button.closest(".message-content");
 
+  if (!content) {
+    return;
+  }
 
-    const dark =
-        document.body.classList.contains(
-            "dark"
-        );
+  const textElement =
+    content.querySelector(".bot-text");
 
+  if (!textElement) {
+    return;
+  }
 
-    localStorage.setItem(
-        "chatbot-theme",
-        dark
-            ? "dark"
-            : "light"
-    );
+  const text =
+    textElement.innerText.trim();
 
+  if (!text) {
+    return;
+  }
 
-    updateThemeIcon();
+  try {
+    await navigator.clipboard.writeText(text);
 
-}
-
-
-function updateThemeIcon() {
-
-    const button =
-        document.getElementById(
-            "themeButton"
-        );
-
-
-    if (!button) {
-        return;
-    }
-
-
-    const dark =
-        document.body.classList.contains(
-            "dark"
-        );
-
+    const oldText =
+      button.textContent;
 
     button.textContent =
-        dark
-            ? "☀"
-            : "☾";
+      "✓";
 
+    setTimeout(() => {
+      button.textContent =
+        oldText;
+    }, 1200);
+
+  } catch (error) {
+
+    console.error(
+      "Copy failed:",
+      error
+    );
+
+    // Fallback
+    const textarea =
+      document.createElement("textarea");
+
+    textarea.value = text;
+
+    document.body.appendChild(textarea);
+
+    textarea.select();
+
+    document.execCommand("copy");
+
+    textarea.remove();
+
+    button.textContent =
+      "✓";
+
+    setTimeout(() => {
+      button.textContent =
+        "⧉";
+    }, 1200);
+  }
 }
 
 
-/* Load saved theme */
+// =========================================================
+// SUGGESTION
+// =========================================================
 
-(function loadTheme() {
+function useSuggestion(text) {
+  if (!messageInput) {
+    return;
+  }
 
-    const saved =
-        localStorage.getItem(
-            "chatbot-theme"
-        );
+  messageInput.value =
+    text;
+
+  autoResizeTextarea();
+
+  messageInput.focus();
+
+  setTimeout(() => {
+    if (!isSending) {
+      sendMessage();
+    }
+  }, 100);
+}
 
 
-    if (saved === "dark") {
+// =========================================================
+// NEW CHAT
+// =========================================================
 
-        document.body.classList.add(
-            "dark"
-        );
+async function newChat() {
+  try {
 
+    const response =
+      await fetch("/new-chat/", {
+        method: "POST",
+
+        headers: {
+          "X-CSRFToken": getCSRFToken(),
+          "X-Requested-With": "XMLHttpRequest"
+        },
+
+        credentials: "same-origin"
+      });
+
+
+    if (!response.ok) {
+      throw new Error(
+        "Could not create new chat."
+      );
     }
 
 
-    updateThemeIcon();
+    const data =
+      await response.json();
 
-})();
-
-
-/* =========================================================
-   MOBILE SIDEBAR
-   ========================================================= */
-
-function toggleSidebar() {
-
-    const sidebar =
-        document.getElementById(
-            "sidebar"
-        );
-
-    const overlay =
-        document.getElementById(
-            "sidebarOverlay"
-        );
-
-
-    sidebar.classList.toggle(
-        "open"
+    console.log(
+      "NEW CHAT:",
+      data
     );
 
-    overlay.classList.toggle(
-        "show"
+
+    if (data.conversation_id) {
+
+      currentConversationId =
+        data.conversation_id;
+
+      document.body.dataset.conversationId =
+        data.conversation_id;
+    }
+
+
+    window.location.reload();
+
+  } catch (error) {
+
+    console.error(
+      "New chat error:",
+      error
     );
 
+    window.location.href =
+      "/";
+  }
 }
 
 
-/* Close mobile sidebar after opening chat */
+// =========================================================
+// OPEN CONVERSATION
+// =========================================================
 
-document
-    .querySelectorAll(
-        ".conversation-main"
-    )
-    .forEach(item => {
+function openConversation(conversationId) {
+  if (!conversationId) {
+    return;
+  }
 
-        item.addEventListener(
-            "click",
-            () => {
-
-                if (
-                    window.innerWidth <= 850
-                ) {
-
-                    toggleSidebar();
-
-                }
-
-            }
-        );
-
-    });
-
-
-/* =========================================================
-   AUTO SCROLL
-   ========================================================= */
-
-function scrollToBottom() {
-
-    requestAnimationFrame(() => {
-
-        chatArea.scrollTop =
-            chatArea.scrollHeight;
-
-    });
-
+  window.location.href =
+    "/?conversation=" +
+    encodeURIComponent(conversationId);
 }
 
 
-/* Initial scroll */
+// =========================================================
+// DELETE CONVERSATION
+// =========================================================
 
-window.addEventListener(
-    "load",
-    () => {
+async function deleteConversation(
+  event,
+  conversationId
+) {
+  if (event) {
+    event.stopPropagation();
+    event.preventDefault();
+  }
 
-        scrollToBottom();
+  if (!conversationId) {
+    return;
+  }
 
-        if (messageInput) {
-            messageInput.focus();
+  const confirmed =
+    confirm(
+      "Are you sure you want to delete this chat?"
+    );
+
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+
+    const response =
+      await fetch(
+        "/delete-conversation/" +
+          conversationId +
+          "/",
+        {
+          method: "POST",
+
+          headers: {
+            "X-CSRFToken": getCSRFToken(),
+            "X-Requested-With":
+              "XMLHttpRequest"
+          },
+
+          credentials: "same-origin"
+        }
+      );
+
+
+    if (!response.ok) {
+      throw new Error(
+        "Delete failed."
+      );
+    }
+
+
+    const item =
+      document.querySelector(
+        `.conversation-item[data-conversation-id="${conversationId}"]`
+      );
+
+    if (item) {
+      item.remove();
+    }
+
+
+    if (
+      String(currentConversationId) ===
+      String(conversationId)
+    ) {
+      window.location.href = "/";
+    }
+
+  } catch (error) {
+
+    console.error(
+      "Delete conversation error:",
+      error
+    );
+
+    alert(
+      "Chat delete nahi ho payi."
+    );
+  }
+}
+
+
+// =========================================================
+// DELETE ALL CHATS
+// =========================================================
+
+async function deleteAllChats() {
+  const confirmed =
+    confirm(
+      "Are you sure you want to delete all chats?"
+    );
+
+  if (!confirmed) {
+    return;
+  }
+
+  try {
+
+    const response =
+      await fetch(
+        "/delete-all-chats/",
+        {
+          method: "POST",
+
+          headers: {
+            "X-CSRFToken": getCSRFToken(),
+            "X-Requested-With":
+              "XMLHttpRequest"
+          },
+
+          credentials: "same-origin"
+        }
+      );
+
+
+    if (!response.ok) {
+      throw new Error(
+        "Delete all chats failed."
+      );
+    }
+
+
+    window.location.href =
+      "/";
+
+  } catch (error) {
+
+    console.error(
+      "Delete all chats error:",
+      error
+    );
+
+    alert(
+      "Chats delete nahi ho payi."
+    );
+  }
+}
+
+
+// =========================================================
+// REFRESH CONVERSATION LIST
+// =========================================================
+
+async function refreshConversationList() {
+  try {
+
+    const response =
+      await fetch(
+        window.location.href,
+        {
+          method: "GET",
+          credentials: "same-origin"
+        }
+      );
+
+    if (!response.ok) {
+      return;
+    }
+
+    const html =
+      await response.text();
+
+    const parser =
+      new DOMParser();
+
+    const documentHTML =
+      parser.parseFromString(
+        html,
+        "text/html"
+      );
+
+    const newList =
+      documentHTML.querySelector(
+        "#conversationList"
+      );
+
+    if (!newList || !conversationList) {
+      return;
+    }
+
+    conversationList.innerHTML =
+      newList.innerHTML;
+
+  } catch (error) {
+
+    console.error(
+      "Conversation refresh error:",
+      error
+    );
+  }
+}
+
+
+// =========================================================
+// CHAT SEARCH
+// =========================================================
+
+if (chatSearch) {
+  chatSearch.addEventListener(
+    "input",
+    function () {
+
+      const searchValue =
+        this.value
+          .trim()
+          .toLowerCase();
+
+      const items =
+        document.querySelectorAll(
+          ".conversation-item"
+        );
+
+
+      items.forEach((item) => {
+
+        const title =
+          item.dataset.title || "";
+
+        if (
+          !searchValue ||
+          title.includes(searchValue)
+        ) {
+          item.style.display =
+            "flex";
+        } else {
+          item.style.display =
+            "none";
         }
 
+      });
     }
+  );
+}
+
+
+// =========================================================
+// THEME
+// =========================================================
+
+function toggleTheme() {
+  const currentTheme =
+    document.documentElement
+      .getAttribute("data-theme");
+
+  const newTheme =
+    currentTheme === "dark"
+      ? "light"
+      : "dark";
+
+  document.documentElement.setAttribute(
+    "data-theme",
+    newTheme
+  );
+
+  localStorage.setItem(
+    "chatbot-theme",
+    newTheme
+  );
+
+  updateThemeButton(newTheme);
+}
+
+
+// =========================================================
+// UPDATE THEME BUTTON
+// =========================================================
+
+function updateThemeButton(theme) {
+  if (!themeButton) {
+    return;
+  }
+
+  if (theme === "dark") {
+    themeButton.textContent =
+      "☀";
+
+    themeButton.title =
+      "Switch to light theme";
+
+  } else {
+
+    themeButton.textContent =
+      "☾";
+
+    themeButton.title =
+      "Switch to dark theme";
+  }
+}
+
+
+// =========================================================
+// LOAD THEME
+// =========================================================
+
+function loadTheme() {
+  const savedTheme =
+    localStorage.getItem(
+      "chatbot-theme"
+    );
+
+  if (savedTheme) {
+
+    document.documentElement.setAttribute(
+      "data-theme",
+      savedTheme
+    );
+
+    updateThemeButton(
+      savedTheme
+    );
+
+    return;
+  }
+
+
+  const prefersDark =
+    window.matchMedia &&
+    window.matchMedia(
+      "(prefers-color-scheme: dark)"
+    ).matches;
+
+
+  if (prefersDark) {
+
+    document.documentElement.setAttribute(
+      "data-theme",
+      "dark"
+    );
+
+    updateThemeButton(
+      "dark"
+    );
+
+  } else {
+
+    document.documentElement.setAttribute(
+      "data-theme",
+      "light"
+    );
+
+    updateThemeButton(
+      "light"
+    );
+  }
+}
+
+
+// =========================================================
+// MOBILE SIDEBAR
+// =========================================================
+
+function toggleSidebar() {
+  if (!sidebar) {
+    return;
+  }
+
+  sidebar.classList.toggle(
+    "open"
+  );
+
+  if (sidebarOverlay) {
+    sidebarOverlay.classList.toggle(
+      "active"
+    );
+  }
+}
+
+
+// =========================================================
+// CLOSE SIDEBAR WHEN CONVERSATION OPENED
+// =========================================================
+
+document.addEventListener(
+  "click",
+  function (event) {
+
+    const conversation =
+      event.target.closest(
+        ".conversation-main"
+      );
+
+    if (
+      conversation &&
+      window.innerWidth <= 768
+    ) {
+      if (sidebar) {
+        sidebar.classList.remove(
+          "open"
+        );
+      }
+
+      if (sidebarOverlay) {
+        sidebarOverlay.classList.remove(
+          "active"
+        );
+      }
+    }
+  }
 );
 
+
+// =========================================================
+// SCROLL TO BOTTOM
+// =========================================================
+
+function scrollToBottom() {
+  if (!chatArea) {
+    return;
+  }
+
+  requestAnimationFrame(() => {
+
+    chatArea.scrollTop =
+      chatArea.scrollHeight;
+
+    window.scrollTo(
+      0,
+      document.body.scrollHeight
+    );
+
+  });
+}
+
+
+// =========================================================
+// INITIALIZATION
+// =========================================================
+
+document.addEventListener(
+  "DOMContentLoaded",
+  function () {
+
+    loadTheme();
+
+    autoResizeTextarea();
+
+    setTimeout(() => {
+      scrollToBottom();
+    }, 100);
+
+    if (messageInput) {
+      messageInput.focus();
+    }
+
+  }
+);
+
+
+// =========================================================
+// EXPOSE FUNCTIONS TO HTML
+// =========================================================
+
+window.sendMessage =
+  sendMessage;
+
+window.newChat =
+  newChat;
+
+window.openConversation =
+  openConversation;
+
+window.deleteConversation =
+  deleteConversation;
+
+window.deleteAllChats =
+  deleteAllChats;
+
+window.copyMessage =
+  copyMessage;
+
+window.useSuggestion =
+  useSuggestion;
+
+window.toggleTheme =
+  toggleTheme;
+
+window.toggleSidebar =
+  toggleSidebar;

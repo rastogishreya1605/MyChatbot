@@ -3,60 +3,48 @@ from django.shortcuts import render, get_object_or_404
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_POST
 
-import requests
-import re
 import os
-import time
+import re
+import requests
 
 from google import genai
+from google.genai import types
 
 from .models import Conversation, ChatMessage
 
 
 # =========================================================
-# CONFIG
+# CONFIGURATION
 # =========================================================
 
-# Gemini models in priority order.
-# If one model is temporarily busy/unavailable,
-# the next model will automatically be tried.
-GEMINI_MODELS = [
-    "gemini-3.8-flash",
-    "gemini-3.7-flash",
-    "gemini-3.6-flash",
-    "gemini-3.5-flash",
-]
+# Use ONE primary model first.
+# This avoids trying multiple Gemini models sequentially.
+GEMINI_MODEL = "gemini-3.8-flash"
 
-MAX_HISTORY_MESSAGES = 4
+MAX_HISTORY_MESSAGES = 6
+
+# Gemini HTTP timeout in milliseconds.
+# 45 seconds is enough for a normal chatbot request
+# and prevents the worker from hanging indefinitely.
+GEMINI_TIMEOUT_MS = 45000
 
 
 # =========================================================
-# HOME
+# BASIC PAGES
 # =========================================================
 
 @ensure_csrf_cookie
 def home(request):
-
-    conversation = (
-        Conversation.objects
-        .order_by("-updated_at")
-        .first()
-    )
+    conversation = Conversation.objects.order_by("-updated_at").first()
 
     if conversation is None:
         conversation = Conversation.objects.create(
             title="New Chat"
         )
 
-    conversations = (
-        Conversation.objects
-        .order_by("-updated_at")
-    )
+    conversations = Conversation.objects.order_by("-updated_at")
 
-    chat_history = (
-        conversation.messages
-        .order_by("created_at")
-    )
+    chat_history = conversation.messages.order_by("created_at")
 
     return render(
         request,
@@ -65,31 +53,20 @@ def home(request):
             "conversations": conversations,
             "current_conversation": conversation,
             "chat_history": chat_history,
-        }
+        },
     )
 
-
-# =========================================================
-# CONVERSATION DETAIL
-# =========================================================
 
 @ensure_csrf_cookie
 def conversation_detail(request, conversation_id):
-
     conversation = get_object_or_404(
         Conversation,
-        id=conversation_id
+        id=conversation_id,
     )
 
-    conversations = (
-        Conversation.objects
-        .order_by("-updated_at")
-    )
+    conversations = Conversation.objects.order_by("-updated_at")
 
-    chat_history = (
-        conversation.messages
-        .order_by("created_at")
-    )
+    chat_history = conversation.messages.order_by("created_at")
 
     return render(
         request,
@@ -98,7 +75,7 @@ def conversation_detail(request, conversation_id):
             "conversations": conversations,
             "current_conversation": conversation,
             "chat_history": chat_history,
-        }
+        },
     )
 
 
@@ -108,7 +85,6 @@ def conversation_detail(request, conversation_id):
 
 @require_POST
 def new_chat(request):
-
     conversation = Conversation.objects.create(
         title="New Chat"
     )
@@ -123,11 +99,10 @@ def new_chat(request):
 
 
 # =========================================================
-# CLEAN AI RESPONSE
+# TEXT CLEANING
 # =========================================================
 
 def clean_ai_response(text):
-
     if not text:
         return ""
 
@@ -143,51 +118,30 @@ def clean_ai_response(text):
     ]
 
     for prefix in prefixes:
-
         if text.startswith(prefix):
-
             text = text[len(prefix):].strip()
-
-    # Fixed regex
-    text = re.sub(
-        r"\*\*\n\*\*?(User|Assistant|AI|Bot):\s*$",
-        "",
-        text,
-        flags=re.IGNORECASE
-    )
 
     return text.strip()
 
 
-# =========================================================
-# REMOVE HTML
-# =========================================================
-
 def strip_html(text):
-
     if not text:
         return ""
 
-    text = re.sub(
-        r"<[^>]+>",
-        " ",
-        text
-    )
+    text = re.sub(r"<[^>]+>", " ", text)
 
-    text = (
-        text
-        .replace("&amp;", "&")
-        .replace("&quot;", '"')
-        .replace("&#x27;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-    )
+    replacements = {
+        "&amp;": "&",
+        "&quot;": '"',
+        "&#x27;": "'",
+        "&lt;": "<",
+        "&gt;": ">",
+    }
 
-    text = re.sub(
-        r"\s+",
-        " ",
-        text
-    )
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    text = re.sub(r"\s+", " ", text)
 
     return text.strip()
 
@@ -196,30 +150,22 @@ def strip_html(text):
 # WIKIPEDIA SEARCH
 # =========================================================
 
-def wikipedia_search(query, limit=4):
-
+def wikipedia_search(query, limit=2):
     try:
-
-        api_url = (
-            "https://en.wikipedia.org/w/api.php"
-        )
-
-        params = {
-            "action": "query",
-            "list": "search",
-            "srsearch": query,
-            "format": "json",
-            "utf8": 1,
-            "srlimit": limit,
-        }
-
         response = requests.get(
-            api_url,
-            params=params,
+            "https://en.wikipedia.org/w/api.php",
+            params={
+                "action": "query",
+                "list": "search",
+                "srsearch": query,
+                "format": "json",
+                "utf8": 1,
+                "srlimit": limit,
+            },
             headers={
                 "User-Agent": "MyChatbot/1.0"
             },
-            timeout=8
+            timeout=3,
         )
 
         response.raise_for_status()
@@ -228,28 +174,14 @@ def wikipedia_search(query, limit=4):
 
         results = []
 
-        for item in data.get(
-            "query",
-            {}
-        ).get(
-            "search",
-            []
-        ):
-
-            title = item.get(
-                "title",
-                ""
-            )
+        for item in data.get("query", {}).get("search", []):
+            title = item.get("title", "")
 
             snippet = strip_html(
-                item.get(
-                    "snippet",
-                    ""
-                )
+                item.get("snippet", "")
             )
 
             if title:
-
                 results.append(
                     {
                         "title": title,
@@ -260,10 +192,9 @@ def wikipedia_search(query, limit=4):
         return results
 
     except Exception as error:
-
         print(
             "WIKIPEDIA SEARCH ERROR:",
-            error
+            repr(error),
         )
 
         return []
@@ -273,25 +204,23 @@ def wikipedia_search(query, limit=4):
 # DUCKDUCKGO SEARCH
 # =========================================================
 
-def duckduckgo_search(query, limit=5):
-
+def duckduckgo_search(query, limit=2):
     try:
-
-        url = (
-            "https://html.duckduckgo.com/html/?q="
-            + requests.utils.quote(query)
-        )
-
         response = requests.get(
-            url,
+            "https://html.duckduckgo.com/html/",
+            params={
+                "q": query
+            },
             headers={
-                "User-Agent":
+                "User-Agent": (
                     "Mozilla/5.0 "
                     "(Windows NT 10.0; Win64; x64) "
                     "AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) "
                     "Chrome/131.0 Safari/537.36"
+                )
             },
-            timeout=8
+            timeout=3,
         )
 
         response.raise_for_status()
@@ -303,36 +232,29 @@ def duckduckgo_search(query, limit=5):
         title_matches = re.findall(
             r'class="result__a"[^>]*>(.*?)</a>',
             html,
-            flags=re.DOTALL | re.IGNORECASE
+            flags=re.DOTALL | re.IGNORECASE,
         )
 
         snippet_matches = re.findall(
             r'class="result__snippet"[^>]*>(.*?)'
             r'(?:</a>|</div>)',
             html,
-            flags=re.DOTALL | re.IGNORECASE
+            flags=re.DOTALL | re.IGNORECASE,
         )
 
         for index, title in enumerate(
             title_matches[:limit]
         ):
-
-            clean_title = strip_html(
-                title
-            )
+            clean_title = strip_html(title)
 
             snippet = ""
 
-            if index < len(
-                snippet_matches
-            ):
-
+            if index < len(snippet_matches):
                 snippet = strip_html(
                     snippet_matches[index]
                 )
 
             if clean_title:
-
                 results.append(
                     {
                         "title": clean_title,
@@ -343,147 +265,76 @@ def duckduckgo_search(query, limit=5):
         return results
 
     except Exception as error:
-
         print(
             "DUCKDUCKGO SEARCH ERROR:",
-            error
+            repr(error),
         )
 
         return []
 
 
 # =========================================================
-# SPECIAL TRAVEL KNOWLEDGE
-# =========================================================
-
-TRAVEL_KNOWLEDGE = {
-
-    "rishikesh": {
-
-        "best_time": (
-            "Rishikesh ghoomne ke liye generally "
-            "September se November aur February se April "
-            "achha time maana jata hai. "
-            "October-November mein weather pleasant hota hai "
-            "aur outdoor activities ke liye achha season hota hai."
-        ),
-
-        "monsoon": (
-            "July-August mein monsoon hota hai. "
-            "Is period mein heavy rain aur river conditions "
-            "ki wajah se outdoor activities, especially rafting, "
-            "weather aur local authorities/operators ke according "
-            "affected ho sakti hain."
-        ),
-
-        "summer": (
-            "May-June mein temperature kaafi badh sakta hai, "
-            "isliye sightseeing ke liye subah ya shaam better "
-            "reh sakta hai."
-        ),
-
-        "winter": (
-            "December-January mein weather cooler hota hai. "
-            "Sightseeing aur yoga ke liye time theek ho sakta hai, "
-            "lekin subah-shaam thand hoti hai."
-        ),
-
-        "location": (
-            "Rishikesh Uttarakhand ke Dehradun district mein "
-            "Ganga river ke kinare sthit hai."
-        )
-    }
-}
-
-
-# =========================================================
-# DETECT TRAVEL TOPIC
+# TRAVEL KNOWLEDGE
 # =========================================================
 
 def get_travel_topic_answer(message):
-
     text = message.lower().strip()
 
     if "rishikesh" not in text:
         return None
 
-    # -----------------------------------------------------
-    # BEST TIME
-    # -----------------------------------------------------
-
-    best_time_words = [
-
-        "kab jana",
-        "kab ja",
-        "jana chahiye",
-        "jaana chahiye",
-        "best time",
-        "best month",
-        "best season",
-        "kis month",
-        "kaunse month",
-        "kaun se month",
-        "which month",
-        "when should",
-        "when to go",
-        "time to visit",
-
-    ]
-
     if any(
         word in text
-        for word in best_time_words
+        for word in [
+            "kab jana",
+            "kab ja",
+            "jana chahiye",
+            "jaana chahiye",
+            "best time",
+            "best month",
+            "best season",
+            "kis month",
+            "kaunse month",
+            "kaun se month",
+            "which month",
+            "when should",
+            "when to go",
+            "time to visit",
+        ]
     ):
-
         return (
             "Rishikesh ghoomne ke liye "
-            "**September se November** "
-            "aur **February se April** generally best months hain. 🌿\n\n"
-
-            "• **October–November:** Weather pleasant hota hai, "
-            "sightseeing aur outdoor activities ke liye bahut achha.\n"
-
-            "• **February–April:** Mausam comfortable rehta hai "
-            "aur outdoor activities ke liye suitable hota hai.\n"
-
-            "• **May–June:** Garmi zyada ho sakti hai.\n"
-
-            "• **July–August:** Monsoon ki wajah se rain aur river "
-            "conditions outdoor activities ko affect kar sakti hain.\n\n"
-
-            "**Agar tum specifically rafting + sightseeing ke liye "
-            "ja rahi ho, to October–November ek strong choice hai.**"
+            "**September se November** aur "
+            "**February se April** generally achhe "
+            "months hain. 🌿\n\n"
+            "• **October–November:** Weather pleasant "
+            "hota hai aur sightseeing/outdoor activities "
+            "ke liye achha time hai.\n\n"
+            "• **February–April:** Mausam comfortable "
+            "rehta hai.\n\n"
+            "• **May–June:** Garmi zyada ho sakti hai.\n\n"
+            "• **July–August:** Monsoon ki wajah se "
+            "rain aur river conditions outdoor activities "
+            "ko affect kar sakti hain.\n\n"
+            "**Rafting + sightseeing ke liye "
+            "October–November strong choice hai.**"
         )
-
-    # -----------------------------------------------------
-    # LOCATION
-    # -----------------------------------------------------
-
-    location_words = [
-
-        "kahan hai",
-        "kaha hai",
-        "where is",
-        "location",
-        "located",
-        "situated",
-
-    ]
 
     if any(
         word in text
-        for word in location_words
-    ):
-
-        return TRAVEL_KNOWLEDGE[
-            "rishikesh"
-        ][
-            "location"
+        for word in [
+            "kahan hai",
+            "kaha hai",
+            "where is",
+            "location",
+            "located",
+            "situated",
         ]
-
-    # -----------------------------------------------------
-    # MONSOON
-    # -----------------------------------------------------
+    ):
+        return (
+            "Rishikesh Uttarakhand ke Dehradun district "
+            "mein Ganga river ke kinare sthit hai."
+        )
 
     if any(
         word in text
@@ -496,16 +347,12 @@ def get_travel_topic_answer(message):
             "august",
         ]
     ):
-
-        return TRAVEL_KNOWLEDGE[
-            "rishikesh"
-        ][
-            "monsoon"
-        ]
-
-    # -----------------------------------------------------
-    # SUMMER
-    # -----------------------------------------------------
+        return (
+            "Rishikesh mein July-August monsoon period "
+            "hota hai. Heavy rain aur river conditions "
+            "ki wajah se rafting jaise outdoor activities "
+            "affected ho sakti hain."
+        )
 
     if any(
         word in text
@@ -516,49 +363,26 @@ def get_travel_topic_answer(message):
             "june",
         ]
     ):
-
-        return TRAVEL_KNOWLEDGE[
-            "rishikesh"
-        ][
-            "summer"
-        ]
-
-    # -----------------------------------------------------
-    # WINTER
-    # -----------------------------------------------------
-
-    if any(
-        word in text
-        for word in [
-            "winter",
-            "sardi",
-            "december",
-            "january",
-        ]
-    ):
-
-        return TRAVEL_KNOWLEDGE[
-            "rishikesh"
-        ][
-            "winter"
-        ]
+        return (
+            "May-June mein Rishikesh mein garmi kaafi "
+            "bad sakti hai. Sightseeing ke liye morning "
+            "ya evening better rahegi."
+        )
 
     return None
 
 
 # =========================================================
-# SHOULD USE WEB
+# WEB SEARCH DECISION
 # =========================================================
 
 def needs_web_search(message):
-
     text = message.lower().strip()
 
     if len(text) <= 3:
         return False
 
-    greetings = [
-
+    greetings = {
         "hi",
         "hello",
         "hey",
@@ -570,14 +394,14 @@ def needs_web_search(message):
         "thank you",
         "ok",
         "okay",
-
-    ]
+    }
 
     if text in greetings:
         return False
 
+    # Search the web only when freshness matters.
+    # Normal questions should go directly to Gemini.
     current_words = [
-
         "latest",
         "today",
         "current",
@@ -588,7 +412,6 @@ def needs_web_search(message):
         "currently",
         "abhi",
         "aaj",
-        "is waqt",
         "exam date",
         "admit card",
         "result",
@@ -599,41 +422,12 @@ def needs_web_search(message):
         "job opening",
         "available",
         "availability",
-
     ]
 
-    if any(
-        word in text
-        for word in current_words
-    ):
-
-        return True
-
-    information_words = [
-
-        "what is",
-        "who is",
-        "where is",
-        "when is",
-        "how much",
-        "information",
-        "details",
-        "kya hai",
-        "kaun hai",
-        "kahan hai",
-        "kab hai",
-
-    ]
-
-    if any(
-        word in text
-        for word in information_words
-    ):
-
+    if any(word in text for word in current_words):
         return True
 
     travel_words = [
-
         "travel",
         "trip",
         "tour",
@@ -645,72 +439,61 @@ def needs_web_search(message):
         "best season",
         "jana chahiye",
         "kab jana",
-
     ]
 
-    if any(
-        word in text
-        for word in travel_words
-    ):
-
+    if any(word in text for word in travel_words):
         return True
 
     return False
 
 
 # =========================================================
-# BUILD SEARCH CONTEXT
+# BUILD WEB CONTEXT
 # =========================================================
 
 def build_web_context(message):
-
     results = []
 
+    # Keep search lightweight.
     wiki_results = wikipedia_search(
         message,
-        limit=4
+        limit=2,
     )
 
-    results.extend(
-        wiki_results
-    )
+    results.extend(wiki_results)
 
+    # DDG is optional.
+    # If unavailable, Gemini still works.
     ddg_results = duckduckgo_search(
         message,
-        limit=4
+        limit=2,
     )
 
-    results.extend(
-        ddg_results
-    )
+    results.extend(ddg_results)
 
     if not results:
         return ""
 
-    context = (
-        "SEARCH INFORMATION FOUND FOR THE CURRENT QUESTION:\n\n"
-    )
+    context = "CURRENT SEARCH INFORMATION:\n\n"
 
     seen = set()
-
     count = 0
 
     for result in results:
-
         title = result.get(
             "title",
-            ""
+            "",
         ).strip()
 
         snippet = result.get(
             "snippet",
-            ""
+            "",
         ).strip()
-
-        key = title.lower()
 
         if not title:
             continue
+
+        key = title.lower()
 
         if key in seen:
             continue
@@ -724,30 +507,27 @@ def build_web_context(message):
         )
 
         if snippet:
-
             context += (
                 f"{snippet}\n"
             )
 
         context += "\n"
 
-        if count >= 7:
+        if count >= 4:
             break
 
     return context
 
 
 # =========================================================
-# UPDATE TITLE
+# CONVERSATION TITLE
 # =========================================================
 
 def update_conversation_title(
     conversation,
-    message
+    message,
 ):
-
     if conversation.title == "New Chat":
-
         title = message[:45].strip()
 
         if len(message) > 45:
@@ -763,258 +543,182 @@ def update_conversation_title(
 # =========================================================
 
 def get_gemini_client():
-
     api_key = os.environ.get(
         "GEMINI_API_KEY"
     )
 
     if not api_key:
+        print("GEMINI_API_KEY NOT FOUND")
+
         return None
 
-    return genai.Client(
-        api_key=api_key
+    try:
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                timeout=GEMINI_TIMEOUT_MS,
+            ),
+        )
+
+        return client
+
+    except Exception as error:
+        print(
+            "GEMINI CLIENT ERROR:",
+            repr(error),
+        )
+
+        return None
+
+
+# =========================================================
+# OFFLINE FALLBACK
+# =========================================================
+
+def offline_fallback_answer(message):
+    text = message.lower().strip()
+
+    if "bucket" in text:
+        return (
+            "**Bucket** ek container hota hai jisme "
+            "liquid, objects ya data store kiya ja sakta hai.\n\n"
+            "Programming mein **bucket** word context ke "
+            "according different meanings rakh sakta hai, "
+            "jaise cloud storage bucket ya hash bucket."
+        )
+
+    if "python" in text:
+        return (
+            "**Python** ek high-level, easy-to-learn "
+            "programming language hai. 🐍\n\n"
+            "Iska use mainly:\n"
+            "• Web development — Django, Flask\n"
+            "• AI/ML — TensorFlow, PyTorch, scikit-learn\n"
+            "• Data Analysis — NumPy, Pandas\n"
+            "• Automation and scripting\n"
+            "• APIs and backend development\n\n"
+            "Python ki sabse badi speciality hai ki "
+            "iska syntax simple aur readable hota hai."
+        )
+
+    if "django" in text:
+        return (
+            "**Django** Python ka ek powerful web framework "
+            "hai. Iska use secure aur scalable web applications "
+            "banane ke liye hota hai.\n\n"
+            "Django mein commonly Models, Views, Templates, "
+            "URLs aur Forms ka use kiya jaata hai."
+        )
+
+    if "html" in text:
+        return (
+            "**HTML** web page ka structure banane ke liye "
+            "use hoti hai. HTML mein headings, paragraphs, "
+            "images, links, forms aur buttons jaise elements "
+            "define kiye jaate hain."
+        )
+
+    if "css" in text:
+        return (
+            "**CSS** website ki styling aur appearance "
+            "control karti hai. Isse colors, spacing, fonts, "
+            "layout, animations aur responsive design "
+            "banaya ja sakta hai."
+        )
+
+    if "javascript" in text:
+        return (
+            "**JavaScript** web pages ko interactive banane "
+            "ke liye use hoti hai. Isse buttons, forms, "
+            "animations, API calls aur dynamic content "
+            "handle kiya ja sakta hai."
+        )
+
+    if "sql" in text:
+        return (
+            "**SQL** databases ke saath data ko create, "
+            "read, update aur delete karne ke liye use hoti hai."
+        )
+
+    if (
+        "who are you" in text
+        or "tum kaun" in text
+        or "aap kaun" in text
+    ):
+        return (
+            "Main **My Chatbot** hoon. 🤖\n\n"
+            "Main coding, career, resume, interview "
+            "preparation, learning, travel aur general "
+            "questions mein help kar sakta hoon."
+        )
+
+    return (
+        "Main abhi AI service se connect nahi ho pa raha, "
+        "lekin aapka message receive ho gaya hai. 😊\n\n"
+        "Please thodi der baad dobara try kijiye."
     )
 
 
 # =========================================================
-# CHECK TEMPORARY GEMINI ERROR
+# GEMINI GENERATION
 # =========================================================
 
-def is_temporary_gemini_error(error):
-
-    error_text = str(error).lower()
-
-    temporary_words = [
-
-        "503",
-        "service unavailable",
-        "temporarily unavailable",
-        "temporarily busy",
-        "overloaded",
-        "unavailable",
-        "deadline exceeded",
-        "timeout",
-
-    ]
-
-    return any(
-        word in error_text
-        for word in temporary_words
-    )
-
-
-# =========================================================
-# GEMINI STREAM GENERATOR
-# =========================================================
-
-def gemini_stream(
-    prompt,
-    conversation,
-    message
-):
-
+def generate_gemini_response(prompt):
     client = get_gemini_client()
 
     if client is None:
+        return None, "NO_API_KEY_OR_CLIENT_ERROR"
 
-        yield (
-            "❌ Gemini API key configured nahi hai. "
-            "Render Environment Variables mein "
-            "GEMINI_API_KEY check karo."
+    try:
+        print(
+            f"GEMINI TRYING MODEL: {GEMINI_MODEL}"
         )
 
-        return
-
-    full_response = ""
-
-    successful_model = None
-
-    # =====================================================
-    # TRY GEMINI MODELS ONE BY ONE
-    # =====================================================
-
-    for model_index, model in enumerate(
-        GEMINI_MODELS
-    ):
-
-        try:
-
-            print(
-                f"GEMINI: Trying model {model}"
-            )
-
-            response_stream = (
-                client.models.generate_content_stream(
-                    model=model,
-                    contents=prompt,
-                )
-            )
-
-            model_response = ""
-
-            for chunk in response_stream:
-
-                chunk_text = getattr(
-                    chunk,
-                    "text",
-                    None
-                )
-
-                if chunk_text:
-
-                    model_response += chunk_text
-
-                    yield chunk_text
-
-            if model_response.strip():
-
-                full_response = model_response
-                successful_model = model
-
-                print(
-                    f"GEMINI SUCCESS: {model}"
-                )
-
-                break
-
-            # If no response was returned,
-            # try the next model.
-            print(
-                f"GEMINI EMPTY RESPONSE: {model}"
-            )
-
-        except Exception as error:
-
-            print(
-                f"GEMINI MODEL ERROR [{model}]:",
-                repr(error)
-            )
-
-            # -------------------------------------------------
-            # TEMPORARY ERROR
-            # -------------------------------------------------
-
-            if is_temporary_gemini_error(error):
-
-                if model_index < len(
-                    GEMINI_MODELS
-                ) - 1:
-
-                    print(
-                        f"GEMINI FALLBACK: "
-                        f"{model} unavailable. "
-                        f"Trying next model..."
-                    )
-
-                    # Small delay before fallback
-                    time.sleep(1)
-
-                    continue
-
-                else:
-
-                    yield (
-                        "\n\n⚠️ Gemini ke saare available "
-                        "AI models abhi temporarily busy hain. "
-                        "Please 10–20 seconds baad dobara try karo."
-                    )
-
-                    return
-
-            # -------------------------------------------------
-            # RATE LIMIT
-            # -------------------------------------------------
-
-            error_text = str(error).lower()
-
-            if "429" in error_text:
-
-                if model_index < len(
-                    GEMINI_MODELS
-                ) - 1:
-
-                    print(
-                        f"GEMINI RATE LIMIT: "
-                        f"{model}. Trying fallback..."
-                    )
-
-                    time.sleep(1)
-
-                    continue
-
-                yield (
-                    "\n\n⏳ Gemini API rate limit reached hai. "
-                    "Thodi der baad dobara try karo."
-                )
-
-                return
-
-            # -------------------------------------------------
-            # API KEY
-            # -------------------------------------------------
-
-            if (
-                "401" in error_text
-                or "api key" in error_text
-            ):
-
-                yield (
-                    "\n\n❌ Gemini API key invalid "
-                    "ya unavailable hai. "
-                    "Render Environment Variables check karo."
-                )
-
-                return
-
-            # -------------------------------------------------
-            # ACCESS DENIED
-            # -------------------------------------------------
-
-            if "403" in error_text:
-
-                yield (
-                    "\n\n❌ Gemini API access denied hai. "
-                    "API key permissions check karo."
-                )
-
-                return
-
-            # -------------------------------------------------
-            # OTHER ERROR
-            # -------------------------------------------------
-
-            yield (
-                "\n\n❌ Gemini AI service se "
-                "response nahi aa paya."
-            )
-
-            return
-
-    # =====================================================
-    # SAVE SUCCESSFUL RESPONSE
-    # =====================================================
-
-    full_response = clean_ai_response(
-        full_response
-    )
-
-    if full_response:
-
-        ChatMessage.objects.create(
-            conversation=conversation,
-            user_message=message,
-            bot_response=full_response
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.7,
+                max_output_tokens=700,
+                candidate_count=1,
+            ),
         )
 
-        update_conversation_title(
-            conversation,
-            message
+        answer = getattr(
+            response,
+            "text",
+            None,
         )
+
+        if answer:
+            answer = clean_ai_response(answer)
+
+        if answer:
+            print(
+                f"GEMINI SUCCESS MODEL: {GEMINI_MODEL}"
+            )
+
+            return answer, None
 
         print(
-            f"GEMINI FINAL MODEL USED: "
-            f"{successful_model}"
+            "GEMINI RETURNED EMPTY RESPONSE"
         )
+
+        return None, "EMPTY_GEMINI_RESPONSE"
+
+    except Exception as error:
+        print(
+            "GEMINI ERROR:",
+            repr(error),
+        )
+
+        return None, error
+
+    finally:
+        try:
+            client.close()
+        except Exception:
+            pass
 
 
 # =========================================================
@@ -1024,45 +728,35 @@ def gemini_stream(
 @require_POST
 def send_message(request):
 
-    message = (
-        request.POST
-        .get("message", "")
-        .strip()
-    )
+    message = request.POST.get(
+        "message",
+        "",
+    ).strip()
 
-    conversation_id = (
-        request.POST
-        .get("conversation_id", "")
-        .strip()
-    )
-
-    # =====================================================
-    # VALIDATION
-    # =====================================================
+    conversation_id = request.POST.get(
+        "conversation_id",
+        "",
+    ).strip()
 
     if not message:
-
         return JsonResponse(
             {
                 "success": False,
-                "error":
-                    "Message cannot be empty."
+                "error": "Message cannot be empty.",
             }
         )
 
     if not conversation_id:
-
         return JsonResponse(
             {
                 "success": False,
-                "error":
-                    "Conversation not selected."
+                "error": "Conversation not selected.",
             }
         )
 
     conversation = get_object_or_404(
         Conversation,
-        id=conversation_id
+        id=conversation_id,
     )
 
     # =====================================================
@@ -1070,7 +764,6 @@ def send_message(request):
     # =====================================================
 
     greetings = {
-
         "hi",
         "hello",
         "hey",
@@ -1078,86 +771,36 @@ def send_message(request):
         "hiii",
         "hy",
         "namaste",
-
     }
 
     if message.lower() in greetings:
 
         answer = (
             "Hello! 👋\n\n"
-            "Main My Chatbot hoon. "
+            "Main **My Chatbot** hoon. 🤖\n\n"
             "Aap mujhse coding, career, resume, "
             "interview preparation, learning, "
-            "travel ya general questions ke baare mein "
-            "pooch sakti hain."
+            "travel ya general questions pooch sakti hain."
         )
 
-        def greeting_stream():
+        ChatMessage.objects.create(
+            conversation=conversation,
+            user_message=message,
+            bot_response=answer,
+        )
 
-            yield answer
-
-            ChatMessage.objects.create(
-                conversation=conversation,
-                user_message=message,
-                bot_response=answer
-            )
-
-            update_conversation_title(
-                conversation,
-                message
-            )
+        update_conversation_title(
+            conversation,
+            message,
+        )
 
         return StreamingHttpResponse(
-            greeting_stream(),
-            content_type="text/plain; charset=utf-8"
+            answer,
+            content_type="text/plain; charset=utf-8",
         )
 
     # =====================================================
-    # UNCLEAR SHORT QUESTIONS
-    # =====================================================
-
-    unclear = {
-
-        "kya",
-        "kyu",
-        "kyun",
-        "kaise",
-        "haan",
-        "han",
-        "hmm",
-        "acha",
-        "accha",
-        "ok",
-        "okay",
-        "?",
-
-    }
-
-    if message.lower() in unclear:
-
-        answer = (
-            "Bilkul 😊 Aap kya poochna chahti hain? "
-            "Question thoda detail mein likh dijiye, "
-            "main accurately help karunga."
-        )
-
-        def unclear_stream():
-
-            yield answer
-
-            ChatMessage.objects.create(
-                conversation=conversation,
-                user_message=message,
-                bot_response=answer
-            )
-
-        return StreamingHttpResponse(
-            unclear_stream(),
-            content_type="text/plain; charset=utf-8"
-        )
-
-    # =====================================================
-    # SPECIFIC TRAVEL ANSWERS
+    # TRAVEL SPECIAL ANSWERS
     # =====================================================
 
     travel_answer = get_travel_topic_answer(
@@ -1166,28 +809,24 @@ def send_message(request):
 
     if travel_answer:
 
-        def travel_stream():
+        ChatMessage.objects.create(
+            conversation=conversation,
+            user_message=message,
+            bot_response=travel_answer,
+        )
 
-            yield travel_answer
-
-            ChatMessage.objects.create(
-                conversation=conversation,
-                user_message=message,
-                bot_response=travel_answer
-            )
-
-            update_conversation_title(
-                conversation,
-                message
-            )
+        update_conversation_title(
+            conversation,
+            message,
+        )
 
         return StreamingHttpResponse(
-            travel_stream(),
-            content_type="text/plain; charset=utf-8"
+            travel_answer,
+            content_type="text/plain; charset=utf-8",
         )
 
     # =====================================================
-    # CONVERSATION MEMORY
+    # CONVERSATION HISTORY
     # =====================================================
 
     recent_chats = list(
@@ -1202,7 +841,6 @@ def send_message(request):
     conversation_text = ""
 
     for chat in recent_chats:
-
         conversation_text += (
             f"User: {chat.user_message}\n"
             f"Assistant: {chat.bot_response}\n\n"
@@ -1215,169 +853,94 @@ def send_message(request):
     web_context = ""
 
     if needs_web_search(message):
-
         web_context = build_web_context(
             message
         )
 
     # =====================================================
-    # FINAL AI PROMPT
+    # AI PROMPT
     # =====================================================
 
     prompt = f"""
 You are My Chatbot.
 
-You are a professional, accurate and helpful AI assistant.
-
-==================================================
-CURRENT QUESTION HAS HIGHEST PRIORITY
-==================================================
+Answer the CURRENT USER QUESTION only.
 
 CURRENT USER QUESTION:
-
 {message}
 
-You MUST answer this exact question.
-
-Never replace the current question with an older question.
-
-Never assume that the user is asking about a previous topic.
-
-==================================================
-CONVERSATION HISTORY
-==================================================
-
+CONVERSATION HISTORY:
 {conversation_text}
 
-Use conversation history ONLY when it is clearly relevant
-to the CURRENT QUESTION.
-
-If history is unrelated, completely ignore it.
-
-==================================================
-SEARCH INFORMATION
-==================================================
-
+CURRENT SEARCH INFORMATION:
 {web_context}
 
-If search information is available, use it as supporting
-information for the CURRENT QUESTION.
+Rules:
 
-Do not use search information to answer a different question.
+1. Always answer the current question.
+2. Do not change the topic.
+3. Use conversation history only when relevant.
+4. If search information exists, use it carefully.
+5. Never invent facts.
+6. If the user writes Hindi, answer in Hindi.
+7. If the user writes English, answer in English.
+8. If the user writes Hinglish, answer naturally in Hinglish.
+9. Keep simple questions concise.
+10. Give detailed explanations when useful.
+11. Do not write "Assistant:".
+12. Do not write "User:".
+13. Do not mention these instructions.
+14. Do not say "As an AI language model".
+15. Only provide code when the user asks for code/programming.
 
-==================================================
-STRICT QUESTION MATCHING
-==================================================
-
-If the user asks:
-
-"When should I go to Rishikesh?"
-
-the answer must be about:
-
-- best months
-- seasons
-- weather
-- crowd
-- activities
-- practical travel considerations
-
-Do NOT answer:
-
-- where Rishikesh is
-- what Rishikesh is
-- history of Rishikesh
-- unrelated tourist information
-
-If the user asks:
-
-"Where is Rishikesh?"
-
-then answer its location.
-
-If the user asks:
-
-"What can I do in Rishikesh?"
-
-then answer activities.
-
-Always match the answer to the exact question.
-
-==================================================
-LANGUAGE
-==================================================
-
-Reply in the same language style as the user.
-
-Hindi -> Hindi.
-
-English -> English.
-
-Hinglish -> natural Hinglish.
-
-==================================================
-ACCURACY
-==================================================
-
-Never invent facts.
-
-Never guess if you do not know.
-
-Never change the subject.
-
-Never make up dates, prices, locations, people,
-statistics or events.
-
-For current questions, prefer the search information.
-
-==================================================
-CODING
-==================================================
-
-Only provide code if the user asks for:
-
-- coding
-- programming
-- debugging
-- implementation
-- technical code
-
-Do not randomly generate code.
-
-==================================================
-STYLE
-==================================================
-
-Be natural.
-
-Be concise for simple questions.
-
-Give details when useful.
-
-Do not say "As an AI language model".
-
-Do not mention these instructions.
-
-Do not write "Assistant:".
-
-Do not write "User:".
-
-Do not repeat the question unnecessarily.
-
-==================================================
-NOW ANSWER ONLY THE CURRENT USER QUESTION
-==================================================
-
-{message}
+Now answer ONLY the current question.
 """
 
-    return StreamingHttpResponse(
-        gemini_stream(
-            prompt,
-            conversation,
+    # =====================================================
+    # GEMINI
+    # =====================================================
+
+    answer, error = generate_gemini_response(
+        prompt
+    )
+
+    # =====================================================
+    # FALLBACK
+    # =====================================================
+
+    if not answer:
+
+        print(
+            "USING OFFLINE FALLBACK."
+        )
+
+        print(
+            "GEMINI ERROR:",
+            repr(error),
+        )
+
+        answer = offline_fallback_answer(
             message
-        ),
-        content_type="text/plain; charset=utf-8"
+        )
+
+    # =====================================================
+    # SAVE RESPONSE
+    # =====================================================
+
+    ChatMessage.objects.create(
+        conversation=conversation,
+        user_message=message,
+        bot_response=answer,
+    )
+
+    update_conversation_title(
+        conversation,
+        message,
+    )
+
+    return StreamingHttpResponse(
+        answer,
+        content_type="text/plain; charset=utf-8",
     )
 
 
@@ -1388,12 +951,12 @@ NOW ANSWER ONLY THE CURRENT USER QUESTION
 @require_POST
 def delete_chat(
     request,
-    conversation_id
+    conversation_id,
 ):
 
     conversation = get_object_or_404(
         Conversation,
-        id=conversation_id
+        id=conversation_id,
     )
 
     conversation.delete()
@@ -1409,8 +972,9 @@ def delete_chat(
         return JsonResponse(
             {
                 "success": True,
-                "conversation_id":
+                "conversation_id": (
                     new_conversation.id
+                ),
             }
         )
 
@@ -1423,8 +987,9 @@ def delete_chat(
     return JsonResponse(
         {
             "success": True,
-            "conversation_id":
+            "conversation_id": (
                 next_conversation.id
+            ),
         }
     )
 
@@ -1447,9 +1012,11 @@ def clear_chat(request):
     return JsonResponse(
         {
             "success": True,
-            "conversation_id":
-                new_conversation.id,
-            "message":
+            "conversation_id": (
+                new_conversation.id
+            ),
+            "message": (
                 "All chats deleted successfully."
+            ),
         }
     )
