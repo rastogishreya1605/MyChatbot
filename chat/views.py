@@ -19,7 +19,7 @@ from .models import Conversation, ChatMessage
 
 # Use ONE primary model first.
 # This avoids trying multiple Gemini models sequentially.
-GEMINI_MODEL = "gemini-3.8-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
 
 MAX_HISTORY_MESSAGES = 6
 
