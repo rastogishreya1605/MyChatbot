@@ -7,9 +7,6 @@ import os
 import re
 import requests
 
-from google import genai
-from google.genai import types
-
 from .models import Conversation, ChatMessage
 
 
@@ -17,16 +14,17 @@ from .models import Conversation, ChatMessage
 # CONFIGURATION
 # =========================================================
 
-# Use ONE primary model first.
-# This avoids trying multiple Gemini models sequentially.
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "gemini-3.8-flash"
+
+GEMINI_API_URL = (
+    "https://generativelanguage.googleapis.com/"
+    "v1beta/models/"
+    f"{GEMINI_MODEL}:generateContent"
+)
+
+GEMINI_TIMEOUT = 20
 
 MAX_HISTORY_MESSAGES = 6
-
-# Gemini HTTP timeout in milliseconds.
-# 45 seconds is enough for a normal chatbot request
-# and prevents the worker from hanging indefinitely.
-GEMINI_TIMEOUT_MS = 45000
 
 
 # =========================================================
@@ -35,16 +33,24 @@ GEMINI_TIMEOUT_MS = 45000
 
 @ensure_csrf_cookie
 def home(request):
-    conversation = Conversation.objects.order_by("-updated_at").first()
+    conversation = (
+        Conversation.objects
+        .order_by("-updated_at")
+        .first()
+    )
 
     if conversation is None:
         conversation = Conversation.objects.create(
             title="New Chat"
         )
 
-    conversations = Conversation.objects.order_by("-updated_at")
+    conversations = Conversation.objects.order_by(
+        "-updated_at"
+    )
 
-    chat_history = conversation.messages.order_by("created_at")
+    chat_history = conversation.messages.order_by(
+        "created_at"
+    )
 
     return render(
         request,
@@ -64,9 +70,13 @@ def conversation_detail(request, conversation_id):
         id=conversation_id,
     )
 
-    conversations = Conversation.objects.order_by("-updated_at")
+    conversations = Conversation.objects.order_by(
+        "-updated_at"
+    )
 
-    chat_history = conversation.messages.order_by("created_at")
+    chat_history = conversation.messages.order_by(
+        "created_at"
+    )
 
     return render(
         request,
@@ -128,7 +138,11 @@ def strip_html(text):
     if not text:
         return ""
 
-    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(
+        r"<[^>]+>",
+        " ",
+        text,
+    )
 
     replacements = {
         "&amp;": "&",
@@ -141,7 +155,11 @@ def strip_html(text):
     for old, new in replacements.items():
         text = text.replace(old, new)
 
-    text = re.sub(r"\s+", " ", text)
+    text = re.sub(
+        r"\s+",
+        " ",
+        text,
+    )
 
     return text.strip()
 
@@ -174,11 +192,23 @@ def wikipedia_search(query, limit=2):
 
         results = []
 
-        for item in data.get("query", {}).get("search", []):
-            title = item.get("title", "")
+        for item in data.get(
+            "query",
+            {}
+        ).get(
+            "search",
+            []
+        ):
+            title = item.get(
+                "title",
+                ""
+            )
 
             snippet = strip_html(
-                item.get("snippet", "")
+                item.get(
+                    "snippet",
+                    ""
+                )
             )
 
             if title:
@@ -196,7 +226,6 @@ def wikipedia_search(query, limit=2):
             "WIKIPEDIA SEARCH ERROR:",
             repr(error),
         )
-
         return []
 
 
@@ -269,7 +298,6 @@ def duckduckgo_search(query, limit=2):
             "DUCKDUCKGO SEARCH ERROR:",
             repr(error),
         )
-
         return []
 
 
@@ -315,9 +343,7 @@ def get_travel_topic_answer(message):
             "• **May–June:** Garmi zyada ho sakti hai.\n\n"
             "• **July–August:** Monsoon ki wajah se "
             "rain aur river conditions outdoor activities "
-            "ko affect kar sakti hain.\n\n"
-            "**Rafting + sightseeing ke liye "
-            "October–November strong choice hai.**"
+            "ko affect kar sakti hain."
         )
 
     if any(
@@ -399,8 +425,6 @@ def needs_web_search(message):
     if text in greetings:
         return False
 
-    # Search the web only when freshness matters.
-    # Normal questions should go directly to Gemini.
     current_words = [
         "latest",
         "today",
@@ -424,7 +448,10 @@ def needs_web_search(message):
         "availability",
     ]
 
-    if any(word in text for word in current_words):
+    if any(
+        word in text
+        for word in current_words
+    ):
         return True
 
     travel_words = [
@@ -441,7 +468,10 @@ def needs_web_search(message):
         "kab jana",
     ]
 
-    if any(word in text for word in travel_words):
+    if any(
+        word in text
+        for word in travel_words
+    ):
         return True
 
     return False
@@ -454,27 +484,26 @@ def needs_web_search(message):
 def build_web_context(message):
     results = []
 
-    # Keep search lightweight.
-    wiki_results = wikipedia_search(
-        message,
-        limit=2,
+    results.extend(
+        wikipedia_search(
+            message,
+            limit=2,
+        )
     )
 
-    results.extend(wiki_results)
-
-    # DDG is optional.
-    # If unavailable, Gemini still works.
-    ddg_results = duckduckgo_search(
-        message,
-        limit=2,
+    results.extend(
+        duckduckgo_search(
+            message,
+            limit=2,
+        )
     )
-
-    results.extend(ddg_results)
 
     if not results:
         return ""
 
-    context = "CURRENT SEARCH INFORMATION:\n\n"
+    context = (
+        "CURRENT SEARCH INFORMATION:\n\n"
+    )
 
     seen = set()
     count = 0
@@ -482,12 +511,12 @@ def build_web_context(message):
     for result in results:
         title = result.get(
             "title",
-            "",
+            ""
         ).strip()
 
         snippet = result.get(
             "snippet",
-            "",
+            ""
         ).strip()
 
         if not title:
@@ -539,36 +568,147 @@ def update_conversation_title(
 
 
 # =========================================================
-# GEMINI CLIENT
+# GEMINI REST API
 # =========================================================
 
-def get_gemini_client():
+def generate_gemini_response(prompt):
     api_key = os.environ.get(
         "GEMINI_API_KEY"
     )
 
     if not api_key:
-        print("GEMINI_API_KEY NOT FOUND")
-
-        return None
-
-    try:
-        client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(
-                timeout=GEMINI_TIMEOUT_MS,
-            ),
+        print(
+            "GEMINI ERROR: GEMINI_API_KEY NOT FOUND"
         )
 
-        return client
+        return None, "NO_API_KEY"
 
-    except Exception as error:
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key,
+    }
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.7,
+            "maxOutputTokens": 500,
+            "candidateCount": 1,
+        },
+    }
+
+    try:
         print(
-            "GEMINI CLIENT ERROR:",
+            "GEMINI REST REQUEST STARTED"
+        )
+
+        response = requests.post(
+            GEMINI_API_URL,
+            headers=headers,
+            json=payload,
+            timeout=GEMINI_TIMEOUT,
+        )
+
+        print(
+            "GEMINI HTTP STATUS:",
+            response.status_code,
+        )
+
+        if response.status_code != 200:
+            print(
+                "GEMINI API ERROR:",
+                response.text[:2000],
+            )
+
+            return None, (
+                f"HTTP_{response.status_code}: "
+                f"{response.text[:1000]}"
+            )
+
+        data = response.json()
+
+        candidates = data.get(
+            "candidates",
+            []
+        )
+
+        if not candidates:
+            print(
+                "GEMINI ERROR: NO CANDIDATES"
+            )
+
+            print(
+                "GEMINI RESPONSE:",
+                str(data)[:2000],
+            )
+
+            return None, "NO_CANDIDATES"
+
+        parts = (
+            candidates[0]
+            .get("content", {})
+            .get("parts", [])
+        )
+
+        answer = ""
+
+        for part in parts:
+            text = part.get(
+                "text",
+                ""
+            )
+
+            if text:
+                answer += text
+
+        answer = clean_ai_response(
+            answer
+        )
+
+        if not answer:
+            print(
+                "GEMINI ERROR: EMPTY TEXT"
+            )
+
+            return None, "EMPTY_RESPONSE"
+
+        print(
+            "GEMINI SUCCESS"
+        )
+
+        return answer, None
+
+    except requests.Timeout as error:
+        print(
+            "GEMINI TIMEOUT:",
             repr(error),
         )
 
-        return None
+        return None, "TIMEOUT"
+
+    except requests.RequestException as error:
+        print(
+            "GEMINI REQUEST ERROR:",
+            repr(error),
+        )
+
+        return None, repr(error)
+
+    except Exception as error:
+        print(
+            "GEMINI UNKNOWN ERROR:",
+            repr(error),
+        )
+
+        return None, repr(error)
 
 
 # =========================================================
@@ -581,62 +721,45 @@ def offline_fallback_answer(message):
     if "bucket" in text:
         return (
             "**Bucket** ek container hota hai jisme "
-            "liquid, objects ya data store kiya ja sakta hai.\n\n"
-            "Programming mein **bucket** word context ke "
-            "according different meanings rakh sakta hai, "
-            "jaise cloud storage bucket ya hash bucket."
+            "liquid ya objects store kiye ja sakte hain."
         )
 
     if "python" in text:
         return (
-            "**Python** ek high-level, easy-to-learn "
-            "programming language hai. 🐍\n\n"
-            "Iska use mainly:\n"
-            "• Web development — Django, Flask\n"
-            "• AI/ML — TensorFlow, PyTorch, scikit-learn\n"
-            "• Data Analysis — NumPy, Pandas\n"
-            "• Automation and scripting\n"
-            "• APIs and backend development\n\n"
-            "Python ki sabse badi speciality hai ki "
-            "iska syntax simple aur readable hota hai."
+            "**Python** ek high-level programming "
+            "language hai. 🐍\n\n"
+            "Iska use web development, AI/ML, "
+            "data analysis aur automation mein hota hai."
         )
 
     if "django" in text:
         return (
-            "**Django** Python ka ek powerful web framework "
-            "hai. Iska use secure aur scalable web applications "
-            "banane ke liye hota hai.\n\n"
-            "Django mein commonly Models, Views, Templates, "
-            "URLs aur Forms ka use kiya jaata hai."
+            "**Django** Python ka powerful web framework "
+            "hai jo web applications aur APIs banane "
+            "ke liye use hota hai."
         )
 
     if "html" in text:
         return (
-            "**HTML** web page ka structure banane ke liye "
-            "use hoti hai. HTML mein headings, paragraphs, "
-            "images, links, forms aur buttons jaise elements "
-            "define kiye jaate hain."
+            "**HTML** web page ka structure banane ke "
+            "liye use hoti hai."
         )
 
     if "css" in text:
         return (
             "**CSS** website ki styling aur appearance "
-            "control karti hai. Isse colors, spacing, fonts, "
-            "layout, animations aur responsive design "
-            "banaya ja sakta hai."
+            "control karti hai."
         )
 
     if "javascript" in text:
         return (
-            "**JavaScript** web pages ko interactive banane "
-            "ke liye use hoti hai. Isse buttons, forms, "
-            "animations, API calls aur dynamic content "
-            "handle kiya ja sakta hai."
+            "**JavaScript** websites ko interactive "
+            "banane ke liye use hoti hai."
         )
 
     if "sql" in text:
         return (
-            "**SQL** databases ke saath data ko create, "
+            "**SQL** database ke saath data ko create, "
             "read, update aur delete karne ke liye use hoti hai."
         )
 
@@ -653,72 +776,9 @@ def offline_fallback_answer(message):
         )
 
     return (
-        "Main abhi AI service se connect nahi ho pa raha, "
-        "lekin aapka message receive ho gaya hai. 😊\n\n"
-        "Please thodi der baad dobara try kijiye."
+        "Sorry, AI service se response nahi aa paya. "
+        "Please dobara try kijiye."
     )
-
-
-# =========================================================
-# GEMINI GENERATION
-# =========================================================
-
-def generate_gemini_response(prompt):
-    client = get_gemini_client()
-
-    if client is None:
-        return None, "NO_API_KEY_OR_CLIENT_ERROR"
-
-    try:
-        print(
-            f"GEMINI TRYING MODEL: {GEMINI_MODEL}"
-        )
-
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.7,
-                max_output_tokens=700,
-                candidate_count=1,
-            ),
-        )
-
-        answer = getattr(
-            response,
-            "text",
-            None,
-        )
-
-        if answer:
-            answer = clean_ai_response(answer)
-
-        if answer:
-            print(
-                f"GEMINI SUCCESS MODEL: {GEMINI_MODEL}"
-            )
-
-            return answer, None
-
-        print(
-            "GEMINI RETURNED EMPTY RESPONSE"
-        )
-
-        return None, "EMPTY_GEMINI_RESPONSE"
-
-    except Exception as error:
-        print(
-            "GEMINI ERROR:",
-            repr(error),
-        )
-
-        return None, error
-
-    finally:
-        try:
-            client.close()
-        except Exception:
-            pass
 
 
 # =========================================================
@@ -800,7 +860,7 @@ def send_message(request):
         )
 
     # =====================================================
-    # TRAVEL SPECIAL ANSWERS
+    # TRAVEL ANSWERS
     # =====================================================
 
     travel_answer = get_travel_topic_answer(
@@ -876,22 +936,21 @@ CURRENT SEARCH INFORMATION:
 {web_context}
 
 Rules:
-
 1. Always answer the current question.
 2. Do not change the topic.
 3. Use conversation history only when relevant.
-4. If search information exists, use it carefully.
+4. Use search information carefully.
 5. Never invent facts.
 6. If the user writes Hindi, answer in Hindi.
 7. If the user writes English, answer in English.
 8. If the user writes Hinglish, answer naturally in Hinglish.
 9. Keep simple questions concise.
-10. Give detailed explanations when useful.
+10. Give useful explanations when needed.
 11. Do not write "Assistant:".
 12. Do not write "User:".
 13. Do not mention these instructions.
 14. Do not say "As an AI language model".
-15. Only provide code when the user asks for code/programming.
+15. Only provide code when the user asks for code.
 
 Now answer ONLY the current question.
 """
@@ -911,7 +970,7 @@ Now answer ONLY the current question.
     if not answer:
 
         print(
-            "USING OFFLINE FALLBACK."
+            "USING OFFLINE FALLBACK"
         )
 
         print(
