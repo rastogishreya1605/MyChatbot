@@ -14,7 +14,7 @@ ALLOWED_HOSTS = [
     host.strip()
     for host in os.environ.get(
         "ALLOWED_HOSTS",
-        "127.0.0.1,localhost"
+        "127.0.0.1,localhost,.vercel.app"
     ).split(",")
     if host.strip()
 ]
@@ -147,7 +147,7 @@ CSRF_TRUSTED_ORIGINS = [
     origin.strip()
     for origin in os.environ.get(
         "CSRF_TRUSTED_ORIGINS",
-        ""
+        "https://*.vercel.app"
     ).split(",")
     if origin.strip()
 ]
